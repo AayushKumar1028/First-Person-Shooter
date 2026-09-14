@@ -1,0 +1,9 @@
+build/
+*.o
+*.obj
+*.exe
+arena_best.txt
+assets/textures/*.png
+assets/textures/*.bmp
+assets/textures/*.ppm
+!assets/textures/README.md
