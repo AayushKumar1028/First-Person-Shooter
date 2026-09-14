@@ -2,8 +2,10 @@
 // decoded here directly so the game still loads custom textures without zlib.
 #include "image.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <unordered_map>
 
 #ifdef FPS_HAVE_ZLIB
 #include <zlib.h>
@@ -11,10 +13,199 @@
 
 namespace fps {
 
+void Texture::beginAuthoring(int newW, int newH) {
+  w = newW;
+  h = newH;
+  pow2 = w > 0 && h > 0 && (w & (w - 1)) == 0 && (h & (h - 1)) == 0;
+  maskX = w - 1;
+  maskY = h - 1;
+  idx.clear();
+  idx.shrink_to_fit();
+  alpha.clear();
+  alpha.shrink_to_fit();
+  palette.clear();
+  px.assign(size_t(w) * size_t(h), 0);
+}
+
+namespace {
+
+inline int channelOf(uint32_t rgb, int channel) {
+  return int((rgb >> (16 - channel * 8)) & 0xFFu);
+}
+
+// A k-d style box over the unique-colour list, used by median cut.
+struct ColorBox {
+  int begin = 0;
+  int end = 0;
+  uint32_t pixels = 0;  // total source pixels represented
+};
+
+void boxBounds(const std::vector<uint32_t>& colors, const ColorBox& box, int lo[3], int hi[3]) {
+  lo[0] = lo[1] = lo[2] = 255;
+  hi[0] = hi[1] = hi[2] = 0;
+  for (int i = box.begin; i < box.end; ++i) {
+    for (int c = 0; c < 3; ++c) {
+      const int v = channelOf(colors[size_t(i)], c);
+      lo[c] = std::min(lo[c], v);
+      hi[c] = std::max(hi[c], v);
+    }
+  }
+}
+
+// Median cut: repeatedly split the box that covers the most pixels along its
+// longest axis, so the palette follows the art instead of a fixed colour cube.
+void medianCut(const std::vector<uint32_t>& colors, const std::vector<uint32_t>& counts,
+               int maxColors, std::vector<uint8_t>& outIndex) {
+  std::vector<int> order(colors.size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = int(i);
+
+  std::vector<ColorBox> boxes;
+  ColorBox first;
+  first.begin = 0;
+  first.end = int(colors.size());
+  for (uint32_t c : counts) first.pixels += c;
+  boxes.push_back(first);
+
+  while (int(boxes.size()) < maxColors) {
+    // Pick the splittable box representing the most pixels.
+    int target = -1;
+    uint32_t best = 0;
+    for (size_t b = 0; b < boxes.size(); ++b) {
+      if (boxes[b].end - boxes[b].begin < 2) continue;
+      if (boxes[b].pixels > best) {
+        best = boxes[b].pixels;
+        target = int(b);
+      }
+    }
+    if (target < 0) break;
+
+    ColorBox& box = boxes[size_t(target)];
+    int lo[3], hi[3];
+    boxBounds(colors, box, lo, hi);
+    int axis = 0;
+    for (int c = 1; c < 3; ++c) {
+      if (hi[c] - lo[c] > hi[axis] - lo[axis]) axis = c;
+    }
+
+    const int shift = 16 - axis * 8;
+    std::sort(order.begin() + box.begin, order.begin() + box.end, [&](int a, int b) {
+      const int ca = int((colors[size_t(a)] >> shift) & 0xFFu);
+      const int cb = int((colors[size_t(b)] >> shift) & 0xFFu);
+      return ca < cb;
+    });
+
+    // Split where the accumulated pixel count passes half the box total.
+    const uint32_t half = box.pixels / 2;
+    uint32_t running = 0;
+    int split = box.begin + 1;
+    for (int i = box.begin; i < box.end - 1; ++i) {
+      running += counts[size_t(order[size_t(i)])];
+      if (running >= half) {
+        split = i + 1;
+        break;
+      }
+    }
+    if (split <= box.begin) split = box.begin + 1;
+    if (split >= box.end) split = box.end - 1;
+
+    ColorBox left;
+    left.begin = box.begin;
+    left.end = split;
+    ColorBox right;
+    right.begin = split;
+    right.end = box.end;
+    for (int i = left.begin; i < left.end; ++i) left.pixels += counts[size_t(order[size_t(i)])];
+    for (int i = right.begin; i < right.end; ++i) right.pixels += counts[size_t(order[size_t(i)])];
+
+    boxes[size_t(target)] = left;
+    boxes.push_back(right);
+  }
+
+  outIndex.assign(colors.size(), 0);
+  for (size_t b = 0; b < boxes.size(); ++b) {
+    for (int i = boxes[b].begin; i < boxes[b].end; ++i) outIndex[size_t(order[size_t(i)])] = uint8_t(b);
+  }
+}
+
+}  // namespace
+
 void Texture::finalize() {
   pow2 = w > 0 && h > 0 && (w & (w - 1)) == 0 && (h & (h - 1)) == 0;
   maskX = w - 1;
   maskY = h - 1;
+
+  if (px.empty()) {
+    if (palette.empty() && !idx.empty()) palette.push_back(rgba(255, 0, 255));
+    return;  // already quantised (or nothing to do)
+  }
+
+  // Does anything actually need an alpha plane?
+  bool needsAlpha = false;
+  for (RGBA c : px) {
+    if (alphaOf(c) != 255) {
+      needsAlpha = true;
+      break;
+    }
+  }
+
+  // Colour histogram over the RGB channels only (alpha lives in its own plane).
+  std::unordered_map<uint32_t, uint32_t> histogram;
+  histogram.reserve(px.size() / 2 + 16);
+  for (RGBA c : px) histogram[c & 0x00FFFFFFu] += 1u;
+
+  std::vector<uint32_t> colors;
+  std::vector<uint32_t> counts;
+  colors.reserve(histogram.size());
+  counts.reserve(histogram.size());
+  for (const auto& entry : histogram) {
+    colors.push_back(entry.first);
+    counts.push_back(entry.second);
+  }
+
+  std::vector<uint8_t> colorIndex;
+  if (colors.size() <= 256) {
+    colorIndex.resize(colors.size());
+    for (size_t i = 0; i < colors.size(); ++i) colorIndex[i] = uint8_t(i);
+    palette.clear();
+    for (uint32_t c : colors) palette.push_back(c | 0xFF000000u);
+  } else {
+    medianCut(colors, counts, 256, colorIndex);
+    const int boxCount = 1 + *std::max_element(colorIndex.begin(), colorIndex.end());
+    palette.assign(size_t(boxCount), 0xFF000000u);
+    // Average each box, weighted by how many pixels each colour covers.
+    std::vector<uint32_t> sum(size_t(boxCount) * 3, 0);
+    std::vector<uint32_t> weight(size_t(boxCount), 0);
+    for (size_t i = 0; i < colors.size(); ++i) {
+      const size_t b = colorIndex[i];
+      for (int ch = 0; ch < 3; ++ch) sum[b * 3 + size_t(ch)] += uint32_t(channelOf(colors[i], ch)) * counts[i];
+      weight[b] += counts[i];
+    }
+    for (size_t b = 0; b < size_t(boxCount); ++b) {
+      if (weight[b] == 0) continue;
+      palette[b] = rgba(int(sum[b * 3] / weight[b]), int(sum[b * 3 + 1] / weight[b]),
+                        int(sum[b * 3 + 2] / weight[b]));
+    }
+  }
+
+  // Map every pixel to its palette slot.
+  std::unordered_map<uint32_t, uint8_t> lookup;
+  lookup.reserve(colors.size() * 2 + 16);
+  for (size_t i = 0; i < colors.size(); ++i) lookup[colors[i]] = colorIndex[i];
+
+  idx.resize(px.size());
+  for (size_t i = 0; i < px.size(); ++i) {
+    const auto it = lookup.find(px[i] & 0x00FFFFFFu);
+    idx[i] = (it == lookup.end()) ? 0 : it->second;
+  }
+
+  if (needsAlpha) {
+    alpha.resize(px.size());
+    for (size_t i = 0; i < px.size(); ++i) alpha[i] = uint8_t(alphaOf(px[i]));
+  }
+
+  // The authoring buffer is the whole point: drop it.
+  px.clear();
+  px.shrink_to_fit();
 }
 
 namespace {
@@ -161,9 +352,7 @@ bool decodePng(const unsigned char* d, size_t n, Texture& out, std::string* err)
     }
   }
 
-  out.w = width;
-  out.h = height;
-  out.px.assign(size_t(width) * size_t(height), rgba(0, 0, 0, 0));
+  out.beginAuthoring(width, height);
 
   for (int y = 0; y < height; ++y) {
     const unsigned char* src = &img[size_t(y) * stride];
@@ -233,9 +422,7 @@ bool decodeBmp(const unsigned char* d, size_t n, Texture& out, std::string* err)
   const size_t rowBytes = ((size_t(width) * bitCount + 31) / 32) * 4;
   if (dataOffset + rowBytes * size_t(height) > n) return fail(err, "BMP pixel data is truncated");
 
-  out.w = width;
-  out.h = height;
-  out.px.assign(size_t(width) * size_t(height), rgba(0, 0, 0, 255));
+  out.beginAuthoring(width, height);
 
   for (int y = 0; y < height; ++y) {
     const int srcY = topDown ? y : (height - 1 - y);
@@ -309,9 +496,7 @@ bool decodePpm(const unsigned char* d, size_t n, Texture& out, std::string* err)
     return fail(err, "PPM has invalid dimensions or depth");
   }
 
-  out.w = width;
-  out.h = height;
-  out.px.assign(size_t(width) * size_t(height), rgba(0, 0, 0, 255));
+  out.beginAuthoring(width, height);
   const float scale = 255.0f / float(maxVal);
 
   if (ascii) {
@@ -361,34 +546,52 @@ bool loadTextureFile(const std::string& path, Texture& out, std::string* err) {
 // ---------------------------------------------------------------------------
 // Encoders
 // ---------------------------------------------------------------------------
-bool writePpm(const std::string& path, const Texture& tex) {
-  if (tex.empty()) return false;
+namespace {
+// Rebuilds a flat RGBA image from whatever stage a texture is in.
+std::vector<RGBA> expandToRGBA(const Texture& tex) {
+  std::vector<RGBA> out(size_t(tex.w) * size_t(tex.h), 0);
+  for (int y = 0; y < tex.h; ++y) {
+    for (int x = 0; x < tex.w; ++x) out[size_t(y) * size_t(tex.w) + size_t(x)] = tex.colorClamped(x, y);
+  }
+  return out;
+}
+}  // namespace
+
+bool writePpmRGBABuffer(const std::string& path, const RGBA* pixels, int w, int h) {
+  if (!pixels || w <= 0 || h <= 0) return false;
   std::ofstream out(path, std::ios::binary);
   if (!out) return false;
-  out << "P6\n" << tex.w << " " << tex.h << "\n255\n";
-  std::vector<unsigned char> row(size_t(tex.w) * 3);
-  for (int y = 0; y < tex.h; ++y) {
-    for (int x = 0; x < tex.w; ++x) {
-      const RGBA c = tex.px[size_t(y) * size_t(tex.w) + size_t(x)];
-      row[size_t(x) * 3 + 0] = (unsigned char)redOf(c);
-      row[size_t(x) * 3 + 1] = (unsigned char)greenOf(c);
-      row[size_t(x) * 3 + 2] = (unsigned char)blueOf(c);
+  out << "P6\n" << w << " " << h << "\n255\n";
+  std::vector<unsigned char> row(size_t(w) * 3);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const RGBA c = pixels[size_t(y) * size_t(w) + size_t(x)];
+      const size_t o = size_t(x) * 3;
+      row[o + 0] = (unsigned char)redOf(c);
+      row[o + 1] = (unsigned char)greenOf(c);
+      row[o + 2] = (unsigned char)blueOf(c);
     }
     out.write(reinterpret_cast<const char*>(row.data()), std::streamsize(row.size()));
   }
   return bool(out);
 }
 
-bool writePng(const std::string& path, const Texture& tex) {
-#ifdef FPS_HAVE_ZLIB
+bool writePpm(const std::string& path, const Texture& tex) {
   if (tex.empty()) return false;
+  const std::vector<RGBA> rgbaPixels = expandToRGBA(tex);
+  return writePpmRGBABuffer(path, rgbaPixels.data(), tex.w, tex.h);
+}
+
+bool writePngRGBABuffer(const std::string& path, const RGBA* pixels, int w, int h) {
+#ifdef FPS_HAVE_ZLIB
+  if (!pixels || w <= 0 || h <= 0) return false;
 
   std::vector<unsigned char> raw;
-  raw.reserve(size_t(tex.h) * (size_t(tex.w) * 4 + 1));
-  for (int y = 0; y < tex.h; ++y) {
+  raw.reserve(size_t(h) * (size_t(w) * 4 + 1));
+  for (int y = 0; y < h; ++y) {
     raw.push_back(0);  // filter type 0 (none)
-    for (int x = 0; x < tex.w; ++x) {
-      const RGBA c = tex.px[size_t(y) * size_t(tex.w) + size_t(x)];
+    for (int x = 0; x < w; ++x) {
+      const RGBA c = pixels[size_t(y) * size_t(w) + size_t(x)];
       raw.push_back((unsigned char)redOf(c));
       raw.push_back((unsigned char)greenOf(c));
       raw.push_back((unsigned char)blueOf(c));
@@ -428,8 +631,8 @@ bool writePng(const std::string& path, const Texture& tex) {
   out.write(reinterpret_cast<const char*>(kSig), 8);
 
   unsigned char ihdr[13];
-  be32(ihdr, uint32_t(tex.w));
-  be32(ihdr + 4, uint32_t(tex.h));
+  be32(ihdr, uint32_t(w));
+  be32(ihdr + 4, uint32_t(h));
   ihdr[8] = 8;   // bit depth
   ihdr[9] = 6;   // color type: RGBA
   ihdr[10] = 0;  // deflate
@@ -441,9 +644,17 @@ bool writePng(const std::string& path, const Texture& tex) {
   return bool(out);
 #else
   (void)path;
-  (void)tex;
+  (void)pixels;
+  (void)w;
+  (void)h;
   return false;
 #endif
+}
+
+bool writePng(const std::string& path, const Texture& tex) {
+  if (tex.empty()) return false;
+  const std::vector<RGBA> rgbaPixels = expandToRGBA(tex);
+  return writePngRGBABuffer(path, rgbaPixels.data(), tex.w, tex.h);
 }
 
 bool saveTexture(const std::string& path, const Texture& tex) {

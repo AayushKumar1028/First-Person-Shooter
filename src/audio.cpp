@@ -145,12 +145,7 @@ bool Audio::init(bool verbose) {
     return false;
   }
 
-  clips_.resize(size_t(Sfx::Count));
-  const std::vector<std::vector<Component>> lib = buildLibrary();
-  for (int i = 0; i < int(Sfx::Count); ++i) {
-    clips_[size_t(i)] = synth(durationFor(Sfx(i)), lib[size_t(i)], 0x5EED0000u + uint32_t(i) * 7919u,
-                              sampleRate_);
-  }
+  prepareClips();
 
   SDL_AudioSpec want{};
   want.freq = sampleRate_;
@@ -172,6 +167,23 @@ bool Audio::init(bool verbose) {
   SDL_PauseAudioDevice(device_, 0);
   if (verbose) std::printf("[audio] %d effects synthesised at %d Hz\n", int(Sfx::Count), sampleRate_);
   return true;
+}
+
+void Audio::prepareClips() {
+  if (clips_.size() == size_t(Sfx::Count)) return;  // already synthesised
+  clips_.clear();
+  clips_.resize(size_t(Sfx::Count));
+  const std::vector<std::vector<Component>> lib = buildLibrary();
+  for (int i = 0; i < int(Sfx::Count); ++i) {
+    clips_[size_t(i)] = synth(durationFor(Sfx(i)), lib[size_t(i)], 0x5EED0000u + uint32_t(i) * 7919u,
+                              sampleRate_);
+  }
+}
+
+size_t Audio::clipBytes() const {
+  size_t total = 0;
+  for (const std::vector<int16_t>& clip : clips_) total += clip.size() * sizeof(int16_t);
+  return total;
 }
 
 void Audio::shutdown() {

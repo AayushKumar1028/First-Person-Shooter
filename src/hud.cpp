@@ -106,19 +106,24 @@ std::string pad(int value, int width) {
 void blitScaled(Framebuffer& fb, const Texture& tex, int dstX, int dstY, int dstW, int dstH,
                 float alpha, RGBA tint) {
   if (tex.empty() || dstW <= 0 || dstH <= 0 || alpha <= 0.0f) return;
+  // Palette-resolved like the world renderer: index plane in, colour out.
+  const uint8_t* srcIdx = tex.idx.data();
+  const uint8_t* srcAlpha = tex.hasAlpha() ? tex.alpha.data() : nullptr;
+  const RGBA* pal = tex.palette.data();
+
   for (int y = 0; y < dstH; ++y) {
     const int fy = dstY + y;
     if (fy < 0 || fy >= fb.h) continue;
     const int ty = clampi(y * tex.h / dstH, 0, tex.h - 1);
-    const RGBA* src = tex.px.data() + size_t(ty) * size_t(tex.w);
+    const size_t rowOff = size_t(ty) * size_t(tex.w);
     for (int x = 0; x < dstW; ++x) {
       const int fx = dstX + x;
       if (fx < 0 || fx >= fb.w) continue;
       const int tx = clampi(x * tex.w / dstW, 0, tex.w - 1);
-      const RGBA c = src[tx];
-      const int a = alphaOf(c);
+      const size_t off = rowOff + size_t(tx);
+      const int a = srcAlpha ? int(srcAlpha[off]) : 255;
       if (a == 0) continue;
-      const RGBA lit = tintColor(c, tint);
+      const RGBA lit = tintColor(pal[srcIdx[off]], tint);
       if (a == 255 && alpha >= 0.999f) {
         fb.set(fx, fy, lit);
       } else {

@@ -1,4 +1,6 @@
 build/
+build-portable/
+dist/
 *.o
 *.obj
 *.exe

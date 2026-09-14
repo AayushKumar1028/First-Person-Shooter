@@ -48,6 +48,20 @@ else()
   target_compile_options(fps_shooter PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
+# --- portable Linux build ----------------------------------------------------
+# Pulls the C++ runtime into the executable and makes it look for shared
+# libraries next to itself ($ORIGIN/lib), so the result is a plain executable
+# plus a small lib/ folder. See scripts/package-linux.sh.
+option(FPS_PORTABLE "Build a relocatable binary for distribution" OFF)
+if(FPS_PORTABLE AND UNIX AND NOT APPLE)
+  target_link_options(fps_shooter PRIVATE -static-libstdc++ -static-libgcc)
+  set_target_properties(fps_shooter PROPERTIES
+    INSTALL_RPATH "\$ORIGIN/lib:\$ORIGIN"
+    BUILD_RPATH "\$ORIGIN/lib:\$ORIGIN"
+    BUILD_WITH_INSTALL_RPATH TRUE)
+  message(STATUS "Portable Linux build enabled (static libstdc++/libgcc, \$ORIGIN rpath)")
+endif()
+
 # Where the "assets/" folder lives at build time, so custom textures can be
 # swapped in without rebuilding anything.
 target_compile_definitions(fps_shooter PRIVATE

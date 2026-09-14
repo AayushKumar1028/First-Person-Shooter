@@ -39,6 +39,7 @@ void printUsage(const char* exe) {
       "assets\n"
       "  --dump-textures   write every built-in texture to assets/textures/\n"
       "                    (drop-in replacements can then be painted over)\n"
+      "  --mem             report RAM usage (art, audio, buffers) and exit\n"
       "\n"
       "testing\n"
       "  --selftest        run a headless scripted demo and print stats\n"
@@ -77,14 +78,84 @@ void printAsciiFrame(const Framebuffer& fb, int columns, const char* title) {
   }
 }
 
-// Wraps a framebuffer as a Texture so it can be written to disk as a PNG.
-Texture toTexture(const Framebuffer& fb) {
-  Texture out;
-  out.w = fb.w;
-  out.h = fb.h;
-  out.px = fb.px;
-  out.finalize();
-  return out;
+// Shows what the game actually costs in RAM: the art, the synthesised audio,
+// and the frame buffers, next to what the texture set cost before it was
+// palettised.
+void reportMemory(const Assets& assets, const Audio& audio, const GameConfig& config) {
+  size_t indexBytes = 0, alphaBytes = 0, paletteBytes = 0, authoringBytes = 0;
+  size_t texels = 0, frames = 0, slots = 0;
+  int framesWithAlpha = 0;
+
+  auto account = [&](const Texture& t, bool& anyAlpha) {
+    if (t.empty()) return;
+    ++frames;
+    texels += size_t(t.w) * size_t(t.h);
+    indexBytes += t.idx.size();
+    alphaBytes += t.alpha.size();
+    paletteBytes += t.palette.size() * sizeof(RGBA);
+    authoringBytes += t.px.size() * sizeof(RGBA);
+    if (t.hasAlpha()) {
+      anyAlpha = true;
+      ++framesWithAlpha;
+    }
+  };
+
+  for (const Texture& t : assets.walls) {
+    if (t.empty()) continue;
+    ++slots;
+    bool any = false;
+    account(t, any);
+  }
+  for (const SpriteSet& set : assets.sprites) {
+    if (!set.count()) continue;
+    ++slots;
+    bool any = false;
+    for (const Texture& f : set.frames) account(f, any);
+  }
+
+  const size_t textureTotal = indexBytes + alphaBytes + paletteBytes + authoringBytes;
+  const size_t clipBytes = audio.clipBytes();
+  const size_t framebufferBytes = size_t(config.renderW) * size_t(config.renderH) * sizeof(RGBA);
+  const size_t grandTotal = textureTotal + clipBytes + framebufferBytes;
+  const double mib = 1024.0 * 1024.0;
+
+  std::printf("\n=== MEMORY ===\n");
+  std::printf("  art slots / frames    : %zu / %zu (%d sprite frames carry alpha)\n", slots, frames,
+              framesWithAlpha);
+  std::printf("  texels                : %zu (%.2f million)\n", texels, double(texels) / 1e6);
+  std::printf("\n  textures\n");
+  std::printf("    palette indices     (1 B/texel) : %8zu B\n", indexBytes);
+  std::printf("    coverage planes     (sprites)   : %8zu B\n", alphaBytes);
+  std::printf("    colour tables       (<=256 each): %8zu B\n", paletteBytes);
+  std::printf("    authoring buffers   (retained)  : %8zu B\n", authoringBytes);
+  std::printf("    subtotal                        : %8zu B (%.2f MiB)\n", textureTotal,
+              double(textureTotal) / mib);
+  std::printf("  synthesised audio     (%d effects)  : %8zu B (%.2f MiB)\n", int(Sfx::Count),
+              clipBytes, double(clipBytes) / mib);
+  std::printf("  frame buffer          (%dx%d)     : %8zu B (%.2f MiB)\n", config.renderW,
+              config.renderH, framebufferBytes, double(framebufferBytes) / mib);
+  std::printf("  -------------------------------------------------------------\n");
+  std::printf("  total                        : %8zu B (%.2f MiB)\n", grandTotal,
+              double(grandTotal) / mib);
+
+  const size_t asRgba = texels * 4;
+  std::printf("\n  the same art as 32-bit RGBA  : %8zu B (%.2f MiB)\n", asRgba,
+              double(asRgba) / mib);
+  if (asRgba > 0) {
+    std::printf("  saving from palettising     : %.0f%% less texture RAM\n",
+                100.0 - 100.0 * double(textureTotal) / double(asRgba));
+  }
+  if (authoringBytes != 0) {
+    std::printf("  WARNING: %zu B of authoring buffers survived; finalize() was missed\n",
+                authoringBytes);
+  }
+}
+
+// Writes a framebuffer straight out as a PNG. Screenshots stay full 32-bit
+// colour - quantising them would only lose fidelity, and it is a one-off.
+bool saveFramebuffer(const std::string& path, const Framebuffer& fb) {
+  if (fb.w <= 0 || fb.h <= 0 || fb.px.empty()) return false;
+  return writePngRGBABuffer(path, fb.px.data(), fb.w, fb.h);
 }
 
 // Deterministic mechanics tests: no window, no timing, fixed maps.
@@ -341,7 +412,7 @@ int runSelfTest(const GameConfig& base, int frames, int levelIndex, bool arena, 
   sane = sane && killsAfter > killsBefore;  // combat must actually damage hostiles
 
   if (shot && *shot) {
-    if (writePng(shot, toTexture(game.framebuffer()))) {
+    if (saveFramebuffer(shot, game.framebuffer())) {
       std::printf("  screenshot    : %s\n", shot);
     } else {
       std::printf("  screenshot    : failed\n");
@@ -360,6 +431,7 @@ int main(int argc, char** argv) {
   GameConfig config;
   bool selftest = false;
   bool dumpTextures = false;
+  bool memReport = false;
   bool startArena = false;
   int startLevel = -1;
   int frames = 600;
@@ -394,6 +466,8 @@ int main(int argc, char** argv) {
       selftest = true;
     } else if (arg == "--dump-textures") {
       dumpTextures = true;
+    } else if (arg == "--mem") {
+      memReport = true;
     } else if (arg == "--size") {
       const char* value = next("--size");
       if (!value) return 1;
@@ -432,6 +506,17 @@ int main(int argc, char** argv) {
     Assets assets;
     assets.build(defaultTextureDirs(), true);
     assets.dumpDefaults("assets/textures");
+    SDL_Quit();
+    return 0;
+  }
+
+  if (memReport) {
+    SDL_Init(SDL_INIT_TIMER);
+    Assets assets;
+    assets.build(defaultTextureDirs(), config.verbose);
+    Audio audio;
+    audio.prepareClips();  // no device needed: this is pure synthesis
+    reportMemory(assets, audio, config);
     SDL_Quit();
     return 0;
   }

@@ -45,6 +45,12 @@ class Audio {
   bool enabled() const { return device_ != 0; }
   int activeVoices() const;
 
+  // Synthesises the effect table without touching SDL, so `--mem` can measure
+  // it on a machine with no sound card. init() calls this for you.
+  void prepareClips();
+  // How much RAM the synthesised effects occupy.
+  size_t clipBytes() const;
+
   static const char* sfxName(Sfx id);
 
  private:

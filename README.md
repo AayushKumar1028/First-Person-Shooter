@@ -13,6 +13,8 @@ replaced with your own art later (see [Custom art](#custom-art)).
 ```
     build: cmake -B build && cmake --build build -j
     run:   ./build/fps_shooter
+
+    no toolchain? ./scripts/package-linux.sh   -> a portable Linux build
 ```
 
 ---
@@ -21,6 +23,8 @@ replaced with your own art later (see [Custom art](#custom-art)).
 
 * [Features](#features)
 * [Building](#building)
+* [Playing without building (Linux)](#playing-without-building-linux)
+* [Memory footprint](#memory-footprint)
 * [Controls](#controls)
 * [Game modes](#game-modes)
 * [Enemies, weapons and pickups](#enemies-weapons-and-pickups)
@@ -109,6 +113,98 @@ SDL2 installed where CMake can find it, then open `build/fps_shooter.sln`.
 CMake copies the `assets/` folder next to the executable after every build, so
 the game finds custom art whether you run it from the build directory or the
 source tree.
+
+---
+
+## Playing without building (Linux)
+
+`scripts/package-linux.sh` produces a relocatable bundle, so you can play it on
+a machine with no compiler and no SDL2 installed:
+
+```bash
+./scripts/package-linux.sh          # writes dist/fps-shooter-linux-x86_64.tar.gz
+```
+
+The tarball unpacks to:
+
+```
+fps-shooter/
+  fps-shooter          <- the executable; run this
+  lib/                 <- the SDL2 it was linked against
+  assets/textures/     <- drop-in art overrides
+  fps-shooter.desktop  <- install into your application menu if you want
+  README.txt
+```
+
+```bash
+tar -xzf fps-shooter-linux-x86_64.tar.gz
+./fps-shooter/fps-shooter
+```
+
+How it stays self-contained:
+
+* the C++ runtime is linked in statically (`-static-libstdc++ -static-libgcc`)
+* the executable carries an `$ORIGIN/lib` rpath, so it finds the bundled SDL2 by
+  itself — no wrapper script and no `LD_LIBRARY_PATH`
+* only `libc` and `zlib` are taken from the host, and those ship with every
+  mainstream distribution
+
+Keep the binary inside its folder: it deliberately looks for `lib/` relative to
+itself. The packaging script re-runs the game from the finished bundle and fails
+if it did not load the bundled SDL2, so a green run means the tarball really is
+relocatable.
+
+---
+
+## Memory footprint
+
+The art is stored the way the 1990s shooters stored it: **one 8-bit palette
+index per pixel instead of four bytes of ARGB**, plus a 256-entry colour table
+per texture and a separate 1-byte coverage plane for sprites that need alpha.
+That trades RAM for one extra array lookup per sampled pixel — exactly the
+right way round for a software renderer, which is already CPU-bound and often
+runs on machines with tight memory budgets.
+
+The same trick is used everywhere a texture is read: walls, floors, ceilings,
+sprites and the HUD all go `palette[index[x, y]]` in their inner loops.
+
+Colours are chosen per texture by median cut rather than a fixed palette, so
+the quantiser spends its 256 slots on the colours the art actually uses. Hand
+painted textures with few flat colours (most of this art, and most pixel art)
+are stored losslessly.
+
+`--mem` prints the current breakdown:
+
+```
+$ ./build/fps_shooter --mem --quiet
+
+=== MEMORY ===
+  art slots / frames    : 72 / 106 (80 sprite frames carry alpha)
+  texels                : 491776 (0.49 million)
+
+  textures
+    palette indices     (1 B/texel) :   491776 B
+    coverage planes     (sprites)   :   385280 B
+    colour tables       (<=256 each):    29668 B
+    authoring buffers   (retained)  :        0 B
+    subtotal                        :   906724 B (0.86 MiB)
+  synthesised audio     (17 effects)  :   390270 B (0.37 MiB)
+  frame buffer          (480x300)     :   576000 B (0.55 MiB)
+  -------------------------------------------------------------
+  total                        :  1872994 B (1.79 MiB)
+
+  the same art as 32-bit RGBA  :  1967104 B (1.88 MiB)
+  saving from palettising     : 54% less texture RAM
+```
+
+Two details worth knowing if you work on `src/image.h`:
+
+* Textures are written in a wide RGBA buffer while they are being generated or
+decoded, then `Texture::finalize()` quantises them and **releases** the buffer.
+  `Assets::build()` quantises every slot in one pass once generation is done,
+  because the generators blend, outline and dither by reading pixels back.
+* A non-zero "authoring buffers (retained)" line means something forgot to call
+  `finalize()`, and those textures will render as garbage.
 
 ---
 
@@ -282,6 +378,13 @@ cmake --build build --target level_check -j && ./build/level_check
 
 # Save a rendered frame as a PNG (works headless).
 ./build/fps_shooter --selftest --frames 60 --shot frame.png
+
+# RAM breakdown: art, synthesised audio and frame buffers, next to what the
+# textures would have cost as 32-bit RGBA. Also flags leaked authoring buffers.
+./build/fps_shooter --mem
+
+# Build a relocatable Linux bundle (see Playing without building).
+./scripts/package-linux.sh
 ```
 
 `./fps_shooter --help` lists all options, including `--level N` and `--arena`
@@ -302,6 +405,7 @@ to skip the menu, `--render WxH` and `--size WxH` for resolution, and `--fov`,
 | Movement speed for head bob | `updatePlayer` (`bobPhase`) |
 | Arena wave sizes and rewards | `Game::startArenaWave` in `src/game.cpp` |
 | Level layouts | `src/levels.cpp` |
+| Palette size per texture (256 = max quality, 16 = chunkiest) | `Texture::finalize` in `src/image.cpp` |
 
 ---
 
@@ -316,6 +420,13 @@ to skip the menu, `--render WxH` and `--size WxH` for resolution, and `--fov`,
   can funnel a crowd through the same doorway.
 * The arena's best score lives in `arena_best.txt` in the working directory;
   delete it to reset.
+* Textures are palettised to 256 colours each. Art with smooth photographic
+  gradients can band slightly; a photograph used as a wall texture is the worst
+  case. Increase the palette size in `Texture::finalize` if you would rather
+  spend the RAM.
+* The synthesised sound effects are held in RAM as 16-bit samples (~0.4 MiB).
+  They could be generated on the fly in the audio callback instead — pure CPU,
+  no clip table — which is the obvious next RAM saving if you want one.
 
 Natural next steps: a level editor, variable floor/ceiling heights, more weapons
 and monsters, and replacing the procedural art with real sprite sheets.

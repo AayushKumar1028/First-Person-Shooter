@@ -85,8 +85,13 @@ void Renderer::renderWorld(Framebuffer& fb, const Level& level, const Camera& ca
 
       const float light = lightAt(rowDist, settings);
       RGBA* dst = fb.row(y);
-      const Texture* cachedTex = nullptr;
+
+      // The tile under the scan changes rarely, so cache its palette and index
+      // plane too - the inner loop then costs one indexed load per pixel.
       int cachedCell = -1;
+      const uint8_t* cellIdx = nullptr;
+      const RGBA* cellPal = nullptr;
+      int cellW = 0, cellH = 0;
 
       for (int x = 0; x < fb.w; ++x) {
         const int cx = int(std::floor(fx));
@@ -99,12 +104,15 @@ void Renderer::renderWorld(Framebuffer& fb, const Level& level, const Camera& ca
             cachedCell = cell;
             const Tile& tile = level.at(cx, cy);
             const Tex which = isFloor ? tile.floor : tile.ceil;
-            cachedTex = &assets_->tex(which);
+            const Texture& tex = assets_->tex(which);
+            cellIdx = tex.idx.data();
+            cellPal = tex.palette.data();
+            cellW = tex.w;
+            cellH = tex.h;
           }
-          const Texture& tex = *cachedTex;
-          const int tx = int((fx - float(cx)) * float(tex.w));
-          const int ty = int((fy - float(cy)) * float(tex.h));
-          dst[x] = shade(tex.texel(tx, ty), light);
+          const int ty = clampi(int((fy - float(cy)) * float(cellH)), 0, cellH - 1);
+          const int tx = clampi(int((fx - float(cx)) * float(cellW)), 0, cellW - 1);
+          dst[x] = shade(cellPal[cellIdx[size_t(ty) * size_t(cellW) + size_t(tx)]], light);
         }
         fx += stepX;
         fy += stepY;
@@ -213,10 +221,16 @@ void Renderer::renderWorld(Framebuffer& fb, const Level& level, const Camera& ca
       float light = lightAt(dist, settings) * (side ? 0.72f : 1.0f);
       if (isDoor && doorOpenAmount > 0.0f) light *= 1.05f;
 
+      // One palette index per texel plus one colour-table lookup, instead of
+      // fetching a 32-bit texel from a much larger buffer.
+      const uint8_t* wallIdx = tex.idx.data();
+      const RGBA* wallPal = tex.palette.data();
+      const int texW = tex.w, texH = tex.h;
+
       float v = vTop + (float(y0) - yTop) * dvPerPixel;
       for (int y = y0; y <= y1; ++y) {
-        const int texY = clampi(int(v * float(tex.h)), 0, tex.h - 1);
-        fb.set(x, y, shade(tex.px[size_t(texY) * size_t(tex.w) + size_t(texX)], light));
+        const int texY = clampi(int(v * float(texH)), 0, texH - 1);
+        fb.set(x, y, shade(wallPal[wallIdx[size_t(texY) * size_t(texW) + size_t(texX)]], light));
         v += dvPerPixel;
       }
     }
@@ -276,15 +290,22 @@ void Renderer::renderWorld(Framebuffer& fb, const Level& level, const Camera& ca
       const float invSpanY = 1.0f / std::max(1e-4f, yBottom - yTop);
       const float invSpanX = 1.0f / std::max(1e-4f, spriteW);
 
+      // Sprites read an index plane plus (only when the art needs it) a
+      // coverage plane, and expand through the palette as they are drawn.
+      const uint8_t* sprIdx = tex.idx.data();
+      const uint8_t* sprAlpha = tex.hasAlpha() ? tex.alpha.data() : nullptr;
+      const RGBA* sprPal = tex.palette.data();
+      const int texW = tex.w, texH = tex.h;
+
       for (int x = x0; x <= x1; ++x) {
         if (transformY >= depth_[size_t(x)]) continue;  // hidden behind a wall
-        const int texX = clampi(int((float(x) - xLeft) * invSpanX * float(tex.w)), 0, tex.w - 1);
+        const int texX = clampi(int((float(x) - xLeft) * invSpanX * float(texW)), 0, texW - 1);
         for (int y = y0; y <= y1; ++y) {
-          const int texY = clampi(int((float(y) - yTop) * invSpanY * float(tex.h)), 0, tex.h - 1);
-          const RGBA c = tex.px[size_t(texY) * size_t(tex.w) + size_t(texX)];
-          const int a = alphaOf(c);
+          const int texY = clampi(int((float(y) - yTop) * invSpanY * float(texH)), 0, texH - 1);
+          const size_t off = size_t(texY) * size_t(texW) + size_t(texX);
+          const int a = sprAlpha ? int(sprAlpha[off]) : 255;
           if (a == 0) continue;
-          const RGBA lit = shade(applyTint(c, s.tint), light);
+          const RGBA lit = shade(applyTint(sprPal[sprIdx[off]], s.tint), light);
           if (a == 255) {
             fb.set(x, y, lit);
           } else {

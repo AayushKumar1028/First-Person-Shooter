@@ -16,11 +16,12 @@ constexpr int kSpriteSize = 64;
 // ---------------------------------------------------------------------------
 // Drawing helpers on Texture
 // ---------------------------------------------------------------------------
+// Starts an authoring buffer. Quantisation happens once, in freezeAllArt(),
+// after every generator has finished - generators read pixels back (blending
+// grime, outlines, noise), so they need the wide RGBA buffer while they run.
 void newTex(Texture& t, int w, int h) {
-  t.w = w;
-  t.h = h;
-  t.px.assign(size_t(w) * size_t(h), rgba(0, 0, 0, 0));
-  t.finalize();
+  t.beginAuthoring(w, h);
+  std::fill(t.px.begin(), t.px.end(), rgba(0, 0, 0, 0));
 }
 
 void fill(Texture& t, RGBA c) { std::fill(t.px.begin(), t.px.end(), c); }
@@ -1201,6 +1202,14 @@ void Assets::build(const std::vector<std::string>& dirs, bool verbose) {
       b.frames.resize(1);
       drawFirstPerson(b.frames[0], rng, i, true);
     }
+  }
+
+  // ---- quantise everything the generators produced ------------------------
+  // This is where each texture trades its 4-byte RGBA authoring buffer for a
+  // 1-byte palette index (plus a 1-byte coverage plane for sprites).
+  for (Texture& t : walls) t.finalize();
+  for (SpriteSet& set : sprites) {
+    for (Texture& f : set.frames) f.finalize();
   }
 
   // ---- disk overrides ----------------------------------------------------
