@@ -96,6 +96,8 @@ enum class SpriteId : int {
   WeaponLauncherFire,
   WeaponPlasma,
   WeaponPlasmaFire,
+  WeaponKnife,
+  WeaponKnifeFire,
   // Soft dot used for blood, sparks and debris (tinted per particle).
   Particle,
   Count

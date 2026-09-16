@@ -187,9 +187,16 @@ void drawHud(Framebuffer& fb, const Assets& assets, const HudInfo& info) {
     if (sub && *sub) fontDraw(fb, x + pad6, top + barH - 9 * s, sub, ui::kTextDim, labelScale, 1);
   };
 
-  // --- ammo -------------------------------------------------------------
+  // --- ammo: magazine / reserve, or a melee readout ---------------------
   const WeaponDef& weapon = weaponDef(p.weapon);
-  drawStat(0, "AMMO", pad(p.ammo[int(weapon.ammo)], 3), ui::kAccent, ammoName(weapon.ammo));
+  if (weapon.ammo == AmmoType::None) {
+    drawStat(0, "AMMO", "MELEE", ui::kAccent, weapon.name);
+  } else {
+    const std::string sub = p.reloadTimer > 0.0f
+                                ? std::string("RELOADING...")
+                                : ("RESERVE " + std::to_string(p.ammo[int(weapon.ammo)]));
+    drawStat(0, "AMMO", pad(p.mag[p.weapon], 3), ui::kAccent, sub.c_str());
+  }
 
   // --- health -----------------------------------------------------------
   const RGBA healthColor = p.health > 60 ? ui::kHealth

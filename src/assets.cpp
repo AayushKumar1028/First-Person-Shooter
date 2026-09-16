@@ -737,6 +737,20 @@ void drawFirstPerson(Texture& t, Rng& rng, int kind, bool firing) {
       if (firing) flash(64, 20, 15);
       break;
     }
+    case 5: {  // combat knife, blade up, gloved fist on the grip
+      const int lunge = firing ? 5 : 0;  // thrust forward on the swing
+      rect(t, 60 + lunge, 6 - kick, 9, 44, rgba(198, 204, 216));
+      rect(t, 60 + lunge, 6 - kick, 3, 44, rgba(240, 244, 252));
+      rect(t, 66 + lunge, 12 - kick, 2, 32, rgba(150, 156, 172));
+      ellipseFill(t, 64 + lunge, 48 - kick, 9, 3, rgba(150, 156, 170));
+      rect(t, 59 + lunge, 50 - kick, 11, 10, rgba(58, 60, 68));
+      rect(t, 59 + lunge, 50 - kick, 11, 2, rgba(104, 108, 118));
+      hand(50 + lunge, 56, 28, 22, true);
+      if (firing) {
+        ellipseFill(t, 64 + lunge, 4 - kick, 12, 4, rgba(255, 255, 250));
+      }
+      break;
+    }
     default: {  // plasma rifle
       rect(t, 46, 26 - kick, 36, 28, rgba(52, 62, 92));
       rect(t, 46, 26 - kick, 36, 3, rgba(120, 160, 220));
@@ -913,6 +927,8 @@ const char* spriteName(SpriteId id) {
     case SpriteId::WeaponLauncherFire: return "viewmodel_launcher_fire";
     case SpriteId::WeaponPlasma: return "viewmodel_plasma";
     case SpriteId::WeaponPlasmaFire: return "viewmodel_plasma_fire";
+    case SpriteId::WeaponKnife: return "viewmodel_knife";
+    case SpriteId::WeaponKnifeFire: return "viewmodel_knife_fire";
     case SpriteId::Particle: return "particle";
     default: return "unknown";
   }
@@ -1185,13 +1201,13 @@ void Assets::build(const std::vector<std::string>& dirs, bool verbose) {
 
   // ---- first-person weapon view models -----------------------------------
   {
-    const SpriteId idle[5] = {SpriteId::WeaponPistol, SpriteId::WeaponShotgun,
+    const SpriteId idle[6] = {SpriteId::WeaponPistol, SpriteId::WeaponShotgun,
                               SpriteId::WeaponChaingun, SpriteId::WeaponLauncher,
-                              SpriteId::WeaponPlasma};
-    const SpriteId fire[5] = {SpriteId::WeaponPistolFire, SpriteId::WeaponShotgunFire,
+                              SpriteId::WeaponPlasma, SpriteId::WeaponKnife};
+    const SpriteId fire[6] = {SpriteId::WeaponPistolFire, SpriteId::WeaponShotgunFire,
                               SpriteId::WeaponChaingunFire, SpriteId::WeaponLauncherFire,
-                              SpriteId::WeaponPlasmaFire};
-    for (int i = 0; i < 5; ++i) {
+                              SpriteId::WeaponPlasmaFire, SpriteId::WeaponKnifeFire};
+    for (int i = 0; i < 6; ++i) {
       SpriteSet& a = sprites[size_t(idle[i])];
       a.name = spriteName(idle[i]);
       a.frames.resize(1);

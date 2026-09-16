@@ -30,6 +30,7 @@ enum class Sfx : int {
   PickupWeapon,
   NoWay,
   SwitchWeapon,
+  Knife,
   Count
 };
 

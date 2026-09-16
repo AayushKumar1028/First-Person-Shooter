@@ -12,11 +12,34 @@ namespace {
 
 constexpr double kFixedStep = 1.0 / 60.0;
 
-// Internal render resolutions cycled with F2 / F3.
+// Internal render resolutions - the "quality" setting, and F2 / F3.
 const int kRenderPresets[6][2] = {{320, 200}, {384, 240}, {480, 300},
                                   {640, 400}, {800, 500}, {960, 600}};
+const char* const kQualityNames[6] = {"LOW", "FAST", "MEDIUM", "HIGH", "ULTRA", "EXTREME"};
 
-constexpr float kMenuRepeatDelay = 0.18f;
+// Window sizes offered by the settings menu (GameConfig::resolution indexes it).
+const int kWindowResolutions[4][2] = {{1024, 640}, {1280, 800}, {1600, 900}, {1920, 1080}};
+const char* const kResolutionNames[4] = {"1024 X 640", "1280 X 800", "1600 X 900",
+                                         "1920 X 1080"};
+
+// Frame-rate caps; the last entry (0) means "as fast as the machine can go".
+const int kFpsLimits[6] = {30, 60, 120, 144, 240, 0};
+const char* const kFpsNames[6] = {"30", "60", "120", "144", "240", "UNLIMITED"};
+
+constexpr int kSettingsItems = 5;
+
+// Shrinks a window size so it fits the display's usable area. Never enlarges it,
+// so an explicitly requested size is preserved when the screen is big enough.
+void fitToDisplay(int& w, int& h) {
+  SDL_Rect usable{0, 0, 0, 0};
+  if (SDL_GetDisplayUsableBounds(0, &usable) != 0 || usable.w <= 0 || usable.h <= 0) return;
+  const float scale = std::min(1.0f, std::min(float(usable.w) * 0.92f / float(w),
+                                              float(usable.h) * 0.92f / float(h)));
+  if (scale < 1.0f) {
+    w = std::max(320, int(float(w) * scale));
+    h = std::max(200, int(float(h) * scale));
+  }
+}
 
 // Level 1's main hall - used for the slowly panning title screen camera.
 constexpr float kTitleCentreX = 15.0f;
@@ -88,6 +111,23 @@ bool Game::init(const GameConfig& config) {
   renderSettings_.fogDistance = 18.0f;
   renderSettings_.ambient = 0.22f;
 
+  // Keep the settings indices in sync with whatever the config (or the CLI)
+  // asked for, so the settings menu opens showing the live values.
+  config_.quality = 2;
+  for (int i = 0; i < 6; ++i) {
+    if (kRenderPresets[i][0] == config_.renderW && kRenderPresets[i][1] == config_.renderH) {
+      config_.quality = i;
+      break;
+    }
+  }
+  config_.resolution = 1;
+  for (int i = 0; i < 4; ++i) {
+    if (kWindowResolutions[i][0] == config_.windowW && kWindowResolutions[i][1] == config_.windowH) {
+      config_.resolution = i;
+      break;
+    }
+  }
+
   if (!config_.headless) createWindow();
 
   loadTitleScene();
@@ -103,16 +143,7 @@ void Game::createWindow() {
   // it never opens larger than the screen. Starts windowed; F11 toggles.
   int winW = config_.windowW;
   int winH = config_.windowH;
-  SDL_Rect usable{0, 0, 0, 0};
-  if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.w > 0 && usable.h > 0) {
-    const float maxW = float(usable.w) * 0.92f;
-    const float maxH = float(usable.h) * 0.92f;
-    const float scale = std::min(1.0f, std::min(maxW / float(winW), maxH / float(winH)));
-    if (scale < 1.0f) {
-      winW = std::max(320, int(float(winW) * scale));
-      winH = std::max(200, int(float(winH) * scale));
-    }
-  }
+  fitToDisplay(winW, winH);
   config_.windowW = winW;
   config_.windowH = winH;
 
@@ -144,6 +175,36 @@ void Game::setRenderResolution(int w, int h) {
                                  framebuffer_.w, framebuffer_.h);
     SDL_SetTextureBlendMode(texture_, SDL_BLENDMODE_NONE);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Display settings (driven by the in-game settings menu and the F-keys)
+// ---------------------------------------------------------------------------
+void Game::applyQuality(int index) {
+  config_.quality = clampi(index, 0, 5);
+  setRenderResolution(kRenderPresets[config_.quality][0], kRenderPresets[config_.quality][1]);
+}
+
+void Game::applyResolution(int index) {
+  config_.resolution = clampi(index, 0, 3);
+  applyWindowSize(kWindowResolutions[config_.resolution][0],
+                  kWindowResolutions[config_.resolution][1]);
+}
+
+void Game::applyFullscreen(bool fullscreen) {
+  config_.fullscreen = fullscreen;
+  if (window_) SDL_SetWindowFullscreen(window_, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
+
+void Game::applyFpsLimit(int index) { config_.fpsLimit = kFpsLimits[clampi(index, 0, 5)]; }
+
+void Game::applyWindowSize(int w, int h) {
+  fitToDisplay(w, h);
+  config_.windowW = w;
+  config_.windowH = h;
+  if (!window_ || config_.fullscreen) return;
+  SDL_SetWindowSize(window_, w, h);
+  SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 }
 
 void Game::shutdown() {
@@ -312,9 +373,11 @@ void Game::run() {
       // Mouse deltas and menu edges apply to a single tick only.
       pendingInput_.turn = 0.0f;
       pendingInput_.menuUp = pendingInput_.menuDown = false;
+      pendingInput_.menuLeft = pendingInput_.menuRight = false;
       pendingInput_.menuConfirm = pendingInput_.menuBack = false;
       pendingInput_.cycleWeapon = 0;
       pendingInput_.selectWeapon = -1;
+      pendingInput_.reload = false;
       tick(float(kFixedStep), input);
       accumulator -= kFixedStep;
       ++steps;
@@ -324,6 +387,13 @@ void Game::run() {
 
     renderFrame();
     present();
+
+    // Optional frame-rate cap. vsync (when available) still caps to the display.
+    if (config_.fpsLimit > 0) {
+      const double target = 1.0 / double(config_.fpsLimit);
+      const double elapsed = double(SDL_GetPerformanceCounter() - now) / double(freq);
+      if (elapsed < target) SDL_Delay(Uint32((target - elapsed) * 1000.0));
+    }
   }
 }
 
@@ -354,6 +424,9 @@ void Game::tick(float dt, const InputState& input) {
     case GameState::Victory:
     case GameState::Help:
       updateMenus(dt, input);
+      break;
+    case GameState::Settings:
+      updateSettings(dt, input);
       break;
     case GameState::Quit:
       break;
@@ -429,7 +502,7 @@ void Game::advanceCampaign() {
 
 void Game::updateTitle(float dt, const InputState& input) {
   (void)dt;
-  const int count = 4;
+  const int count = 5;
   if (input.menuUp) menuIndex_ = (menuIndex_ + count - 1) % count;
   if (input.menuDown) menuIndex_ = (menuIndex_ + 1) % count;
 
@@ -446,6 +519,11 @@ void Game::updateTitle(float dt, const InputState& input) {
     case 2:
       menuReturnState_ = GameState::Title;
       state_ = GameState::Help;
+      menuIndex_ = 0;
+      break;
+    case 3:
+      menuReturnState_ = GameState::Title;
+      state_ = GameState::Settings;
       menuIndex_ = 0;
       break;
     default:
@@ -476,7 +554,7 @@ void Game::updateMenus(float dt, const InputState& input) {
     }
 
     case GameState::Paused: {
-      const int count = 4;
+      const int count = 5;
       if (up) menuIndex_ = (menuIndex_ + count - 1) % count;
       if (down) menuIndex_ = (menuIndex_ + 1) % count;
       if (input.menuBack) {
@@ -497,6 +575,10 @@ void Game::updateMenus(float dt, const InputState& input) {
       } else if (menuIndex_ == 2) {
         menuReturnState_ = GameState::Paused;
         state_ = GameState::Help;
+        menuIndex_ = 0;
+      } else if (menuIndex_ == 3) {
+        menuReturnState_ = GameState::Paused;
+        state_ = GameState::Settings;
         menuIndex_ = 0;
       } else {
         loadTitleScene();
@@ -555,6 +637,38 @@ void Game::updateMenus(float dt, const InputState& input) {
   }
 }
 
+// The settings menu: up/down picks a row, left/right changes the value.
+void Game::updateSettings(float dt, const InputState& input) {
+  (void)dt;
+  if (input.menuUp) menuIndex_ = (menuIndex_ + kSettingsItems - 1) % kSettingsItems;
+  if (input.menuDown) menuIndex_ = (menuIndex_ + 1) % kSettingsItems;
+
+  auto fpsIndex = [&]() {
+    for (int i = 0; i < 6; ++i) {
+      if (kFpsLimits[i] == config_.fpsLimit) return i;
+    }
+    return 5;
+  };
+
+  const int step = (input.menuRight ? 1 : 0) - (input.menuLeft ? 1 : 0);
+  if (step != 0) {
+    switch (menuIndex_) {
+      case 0: applyQuality((config_.quality + step + 6) % 6); break;
+      case 1: applyResolution((config_.resolution + step + 4) % 4); break;
+      case 2: applyFullscreen(!config_.fullscreen); break;
+      case 3: applyFpsLimit((fpsIndex() + step + 6) % 6); break;
+      default: break;
+    }
+  }
+
+  if (input.menuBack || (input.menuConfirm && menuIndex_ == 4)) {
+    state_ = menuReturnState_;
+    menuIndex_ = 0;
+  } else if (input.menuConfirm && menuIndex_ == 2) {
+    applyFullscreen(!config_.fullscreen);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
@@ -578,19 +692,18 @@ void Game::handleEvents() {
         // Arrows and W/S both step through menus (edge triggered, no repeats).
         else if (sym == SDLK_UP || code == SDL_SCANCODE_W) in.menuUp = true;
         else if (sym == SDLK_DOWN || code == SDL_SCANCODE_S) in.menuDown = true;
+        else if (sym == SDLK_LEFT || code == SDL_SCANCODE_A) in.menuLeft = true;
+        else if (sym == SDLK_RIGHT || code == SDL_SCANCODE_D) in.menuRight = true;
         else if (code == SDL_SCANCODE_Z) in.cycleWeapon += 1;
-        else if (sym >= SDLK_1 && sym <= SDLK_5) in.selectWeapon = int(sym - SDLK_1);
+        else if (code == SDL_SCANCODE_R) in.reload = true;
+        else if (sym >= SDLK_1 && sym <= SDLK_6) in.selectWeapon = int(sym - SDLK_1);
         else if (sym == SDLK_F11 && window_) {
-          const Uint32 flags = SDL_GetWindowFlags(window_);
-          const bool full = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-          SDL_SetWindowFullscreen(window_, full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+          applyFullscreen(!config_.fullscreen);
         } else if (sym == SDLK_F2) {
-          renderPreset_ = clampi(renderPreset_ - 1, 0, 5);
-          setRenderResolution(kRenderPresets[renderPreset_][0], kRenderPresets[renderPreset_][1]);
+          applyQuality(config_.quality - 1);
           setStatus(fmt("RENDER %dx%d", framebuffer_.w, framebuffer_.h));
         } else if (sym == SDLK_F3) {
-          renderPreset_ = clampi(renderPreset_ + 1, 0, 5);
-          setRenderResolution(kRenderPresets[renderPreset_][0], kRenderPresets[renderPreset_][1]);
+          applyQuality(config_.quality + 1);
           setStatus(fmt("RENDER %dx%d", framebuffer_.w, framebuffer_.h));
         }
         break;
@@ -666,7 +779,8 @@ void Game::renderFrame() {
   switch (state_) {
     case GameState::Title: {
       drawTitleCamera(fb);
-      const std::vector<std::string> items = {"NEW GAME", "ARENA MODE", "HOW TO PLAY", "QUIT"};
+      const std::vector<std::string> items = {"NEW GAME", "ARENA MODE", "HOW TO PLAY",
+                                              "SETTINGS", "QUIT"};
       drawMenu(fb, "FPS SHOOTER", "A DOOM-STYLE RAYCASTER IN C++", items, menuIndex_,
                {"ARROWS / WASD MOVE + TURN - MOUSE LOOK",
                 "SPACE FIRE + USE - Z WEAPONS - ESC MENU - F11 FULLSCREEN",
@@ -674,7 +788,8 @@ void Game::renderFrame() {
       break;
     }
 
-    case GameState::Help: {
+    case GameState::Help:
+    case GameState::Settings: {
       if (menuReturnState_ == GameState::Title) drawTitleCamera(fb);
       break;
     }
@@ -740,9 +855,12 @@ void Game::renderFrame() {
     if (world_.messageTimer > 0.0f) {
       drawMessage(fb, world_.message, clampf(world_.messageTimer, 0.0f, 1.0f));
     }
+  }
+
+  // Overlays: in-game banners and menus, plus the Help and Settings screens
+  // (which darken whatever is behind them and draw their own menu panel).
+  if (inGame || state_ == GameState::Help || state_ == GameState::Settings) {
     drawOverlays();
-  } else if (state_ == GameState::Help) {
-    fb.fillRectBlend(0, 0, fb.w, fb.h, rgba(4, 4, 8), 0.78f);
   }
 }
 
@@ -790,10 +908,31 @@ void Game::drawOverlays() {
 
     case GameState::Paused: {
       const std::vector<std::string> items = {"RESUME", arenaMode_ ? "RESTART WAVE" : "RESTART LEVEL",
-                                              "HOW TO PLAY", "QUIT TO MENU"};
+                                              "HOW TO PLAY", "SETTINGS", "QUIT TO MENU"};
       drawMenu(fb, "PAUSED", arenaMode_ ? fmt("ARENA WAVE %d", arenaWave_)
                                         : level_.name,
                items, menuIndex_, {});
+      break;
+    }
+
+    case GameState::Settings: {
+      int fpsIndex = 5;
+      for (int i = 0; i < 6; ++i) {
+        if (kFpsLimits[i] == config_.fpsLimit) fpsIndex = i;
+      }
+      const std::vector<std::string> items = {
+          fmt("QUALITY       %s", kQualityNames[config_.quality]),
+          fmt("RESOLUTION    %s", kResolutionNames[config_.resolution]),
+          fmt("DISPLAY       %s", config_.fullscreen ? "FULLSCREEN" : "WINDOWED"),
+          fmt("FPS LIMIT     %s", kFpsNames[fpsIndex]),
+          "BACK",
+      };
+      const std::vector<std::string> footers = {
+          fmt("WINDOW %d X %d    RENDER %d X %d", config_.windowW, config_.windowH,
+              framebuffer_.w, framebuffer_.h),
+          "UP / DOWN SELECT    LEFT / RIGHT CHANGE    ESC BACK",
+      };
+      drawMenu(fb, "SETTINGS", "", items, menuIndex_, footers);
       break;
     }
 
@@ -805,9 +944,11 @@ void Game::drawOverlays() {
           "LOOK          MOUSE (HORIZONTAL ONLY)",
           "RUN           LEFT SHIFT",
           "SHOOT / USE   SPACE  (MOUSE 1 OR CTRL ALSO FIRE)",
-          "WEAPONS       Z CYCLES   1 2 3 4 5   OR MOUSE WHEEL",
+          "RELOAD        R     (AN EMPTY MAGAZINE RELOADS AUTOMATICALLY)",
+          "WEAPONS       Z CYCLES   1 2 3 4 5 6   OR MOUSE WHEEL",
+          "KNIFE         ALWAYS READY - PRESS 6 OR Z",
           "PAUSE / MENU  ESC TOGGLES",
-          "DISPLAY       F11 FULLSCREEN      F2 / F3 RENDER SCALE",
+          "DISPLAY       F11 FULLSCREEN   F2 / F3 QUALITY   ESC SETTINGS",
           "",
           "GOAL          CLEAR EVERY HOSTILE, THEN REACH THE EXIT",
           "              RED KEYCARDS OPEN THE LOCKED DOORS",

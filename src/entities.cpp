@@ -13,21 +13,27 @@ namespace {
 const WeaponDef kWeapons[int(WeaponId::Count)] = {
     // name            ammo             dmgMin dmgMax pellets spread cooldown auto  hitscan spd  splash ammo kick   range
     {"PISTOL", AmmoType::Bullets, 9, 15, 1, 1.2f, 0.30f, true, true, 0.0f, 0.0f, 1, 0.012f, 34.0f,
-     SpriteId::WeaponPistol, SpriteId::WeaponPistolFire, SpriteId::AmmoBullets, Sfx::Pistol},
+     SpriteId::WeaponPistol, SpriteId::WeaponPistolFire, SpriteId::AmmoBullets, Sfx::Pistol, 12, 1.0f},
 
     {"SHOTGUN", AmmoType::Shells, 5, 10, 7, 7.5f, 0.76f, false, true, 0.0f, 0.0f, 1, 0.05f, 22.0f,
-     SpriteId::WeaponShotgun, SpriteId::WeaponShotgunFire, SpriteId::PickupShotgun, Sfx::Shotgun},
+     SpriteId::WeaponShotgun, SpriteId::WeaponShotgunFire, SpriteId::PickupShotgun, Sfx::Shotgun, 6,
+     1.2f},
 
     {"CHAINGUN", AmmoType::Bullets, 8, 14, 1, 3.0f, 0.104f, true, true, 0.0f, 0.0f, 1, 0.017f, 34.0f,
      SpriteId::WeaponChaingun, SpriteId::WeaponChaingunFire, SpriteId::PickupChaingun,
-     Sfx::Chaingun},
+     Sfx::Chaingun, 30, 1.5f},
 
     {"ROCKET LAUNCHER", AmmoType::Rockets, 70, 100, 1, 0.0f, 0.90f, false, false, 11.0f, 2.7f, 1,
      0.062f, 42.0f, SpriteId::WeaponLauncher, SpriteId::WeaponLauncherFire, SpriteId::PickupLauncher,
-     Sfx::Launcher},
+     Sfx::Launcher, 1, 1.4f},
 
     {"PLASMA RIFLE", AmmoType::Cells, 14, 22, 1, 2.2f, 0.115f, true, false, 16.0f, 0.0f, 1, 0.015f,
-     42.0f, SpriteId::WeaponPlasma, SpriteId::WeaponPlasmaFire, SpriteId::PickupPlasma, Sfx::Plasma},
+     42.0f, SpriteId::WeaponPlasma, SpriteId::WeaponPlasmaFire, SpriteId::PickupPlasma, Sfx::Plasma,
+     20, 1.3f},
+
+    // Melee: no ammo to spend, one swing per press, short-ranged hitscan.
+    {"KNIFE", AmmoType::None, 18, 30, 1, 0.0f, 0.45f, false, true, 0.0f, 0.0f, 0, 0.0f, 1.8f,
+     SpriteId::WeaponKnife, SpriteId::WeaponKnifeFire, SpriteId::WeaponKnife, Sfx::Knife, 0, 0.0f},
 };
 
 const EnemyDef kEnemies[int(EnemyType::Count)] = {
@@ -47,7 +53,7 @@ const EnemyDef kEnemies[int(EnemyType::Count)] = {
      Sfx::EnemyDeath},
 };
 
-const int kMaxAmmo[int(AmmoType::Count)] = {200, 60, 40, 200};
+const int kMaxAmmo[int(AmmoType::Count)] = {200, 60, 40, 200, 0};
 
 // Frames per animation set (kept in sync with assets.cpp).
 constexpr int kIdleFrames = 2;
@@ -68,6 +74,7 @@ const char* ammoName(AmmoType type) {
     case AmmoType::Bullets: return "BULLETS";
     case AmmoType::Shells: return "SHELLS";
     case AmmoType::Rockets: return "ROCKETS";
+    case AmmoType::None: return "MELEE";
     case AmmoType::Cells: return "CELLS";
     default: return "AMMO";
   }
@@ -101,6 +108,10 @@ void World::reset(Level* level, Assets* assets, Audio* audio) {
   player_.ammo[int(AmmoType::Bullets)] = 50;
   player_.hasWeapon[int(WeaponId::Pistol)] = true;
   player_.weapon = int(WeaponId::Pistol);
+  // Every owned weapon starts with a full magazine (pistol and knife here).
+  for (int w = 0; w < int(WeaponId::Count); ++w) {
+    if (player_.hasWeapon[w]) player_.mag[w] = weaponDef(w).magazine;
+  }
 
   message.clear();
   messageTimer = 0.0f;
@@ -468,16 +479,23 @@ void World::fireProjectile(const WeaponDef& weapon) {
 void World::tryFire() {
   Player& p = player_;
   const WeaponDef& weapon = weaponDef(p.weapon);
-  if (p.switchTimer > 0.0f || p.fireCooldown > 0.0f) return;
+  if (p.switchTimer > 0.0f || p.fireCooldown > 0.0f || p.reloadTimer > 0.0f) return;
 
-  if (p.ammo[int(weapon.ammo)] < weapon.ammoPerShot) {
-    addMessage(std::string("OUT OF ") + ammoName(weapon.ammo));
-    if (audio_) audio_->play(Sfx::NoWay, 0.5f);
-    p.fireCooldown = 0.45f;
-    return;
+  if (weapon.ammo != AmmoType::None) {
+    if (p.mag[p.weapon] < weapon.ammoPerShot) {
+      // Empty magazine: reload if there is anything left, else dry-fire.
+      if (p.ammo[int(weapon.ammo)] > 0) {
+        beginReload();
+      } else {
+        addMessage(std::string("OUT OF ") + ammoName(weapon.ammo));
+        if (audio_) audio_->play(Sfx::NoWay, 0.5f);
+        p.fireCooldown = 0.45f;
+      }
+      return;
+    }
+    p.mag[p.weapon] -= weapon.ammoPerShot;
   }
 
-  p.ammo[int(weapon.ammo)] -= weapon.ammoPerShot;
   p.fireCooldown = weapon.cooldown;
   p.muzzleFlash = 0.12f;
 
@@ -487,6 +505,34 @@ void World::tryFire() {
     fireProjectile(weapon);
   }
   if (audio_) audio_->play(weapon.sound, 0.55f, rng_.range(0.96f, 1.05f));
+}
+
+// Reloading pulls rounds out of the reserve pool and into the magazine. Nothing
+// happens for the melee weapon (magazine 0) or when there is nothing to load.
+void World::beginReload() {
+  Player& p = player_;
+  const WeaponDef& weapon = weaponDef(p.weapon);
+  if (weapon.magazine <= 0 || weapon.ammo == AmmoType::None) return;
+  if (p.reloadTimer > 0.0f) return;
+  if (p.mag[p.weapon] >= weapon.magazine) return;
+  if (p.ammo[int(weapon.ammo)] <= 0) return;
+
+  p.reloadTimer = weapon.reloadTime;
+  p.reloadWeapon = p.weapon;
+  addMessage("RELOADING");
+  if (audio_) audio_->play(Sfx::SwitchWeapon, 0.4f, 0.75f);
+}
+
+void World::finishReload() {
+  Player& p = player_;
+  const int index = clampi(p.reloadWeapon, 0, int(WeaponId::Count) - 1);
+  const WeaponDef& weapon = weaponDef(index);
+  p.reloadWeapon = -1;
+  if (weapon.magazine <= 0 || weapon.ammo == AmmoType::None) return;
+  const int need = weapon.magazine - p.mag[index];
+  const int take = std::min(need, p.ammo[int(weapon.ammo)]);
+  p.mag[index] += take;
+  p.ammo[int(weapon.ammo)] -= take;
 }
 
 void World::playerUse() {
@@ -605,6 +651,9 @@ void World::pickupAt(int index) {
         p.hasWeapon[int(id)] = true;
         p.weapon = int(id);
         p.switchTimer = 0.35f;
+        p.mag[int(id)] = def.magazine;
+        p.reloadTimer = 0.0f;
+        p.reloadWeapon = -1;
         addMessage(std::string("YOU GOT THE ") + def.name + "!");
         if (audio_) audio_->play(Sfx::PickupWeapon, 0.7f);
       } else {
@@ -677,11 +726,19 @@ void World::updatePlayer(float dt, const InputState& input) {
   p.pickupFlash = std::max(0.0f, p.pickupFlash - dt * 2.4f);
   p.shake *= std::exp(-dt * 6.0f);
 
-  // Weapon selection.
+  // Reload timer: when it runs out the magazine is topped up from reserve.
+  if (p.reloadTimer > 0.0f) {
+    p.reloadTimer = std::max(0.0f, p.reloadTimer - dt);
+    if (p.reloadTimer <= 0.0f) finishReload();
+  }
+
+  // Weapon selection. Switching cancels an in-progress reload.
   if (input.selectWeapon >= 0 && input.selectWeapon < int(WeaponId::Count) &&
       p.hasWeapon[input.selectWeapon] && input.selectWeapon != p.weapon) {
     p.weapon = input.selectWeapon;
     p.switchTimer = 0.22f;
+    p.reloadTimer = 0.0f;
+    p.reloadWeapon = -1;
     if (audio_) audio_->play(Sfx::SwitchWeapon, 0.45f);
   } else if (input.cycleWeapon != 0) {
     const int dir = input.cycleWeapon > 0 ? 1 : -1;
@@ -693,11 +750,14 @@ void World::updatePlayer(float dt, const InputState& input) {
     if (next != p.weapon) {
       p.weapon = next;
       p.switchTimer = 0.22f;
+      p.reloadTimer = 0.0f;
+      p.reloadWeapon = -1;
       if (audio_) audio_->play(Sfx::SwitchWeapon, 0.45f);
     }
   }
 
-  // Firing.
+  // Firing (R starts a reload; an empty magazine also reloads automatically).
+  if (input.reload) beginReload();
   const WeaponDef& weapon = weaponDef(p.weapon);
   const bool wantsFire = input.fire && (weapon.autoFire || !prevFire_);
   if (wantsFire) tryFire();

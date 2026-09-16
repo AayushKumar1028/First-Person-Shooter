@@ -53,7 +53,8 @@ ARGB framebuffer that is scaled up to the window.
 
 **Gameplay**
 
-* Three-weapon-plus arsenal: pistol, shotgun, chaingun, rocket launcher, plasma rifle
+* Five guns plus a melee knife: pistol, shotgun, chaingun, rocket launcher, plasma rifle
+* Magazine-based reloading (`R`), with an automatic reload when a magazine runs dry
 * Hitscan with per-pellet spread, plus rocket and plasma projectiles with splash damage
 * Three enemy types with distinct AI: guards (hitscan), imps and brutes (fireballs)
 * Enemy AI on a BFS flow field, so they navigate corridors and push doors open
@@ -66,6 +67,7 @@ ARGB framebuffer that is scaled up to the window.
 
 * Title screen with a live, slowly orbiting camera behind the menu
 * Pause menu, how-to-play screen, level intro banners, death and victory screens
+* Settings menu for quality, window resolution, fullscreen and an FPS cap
 * Endless arena mode with escalating waves, score, and a persisted best score
 * Procedurally synthesised sound effects — no audio files, and the game still
   runs if no audio device exists
@@ -220,12 +222,17 @@ decoded, then `Texture::finalize()` quantises them and **releases** the buffer.
 | Run | `Left Shift` |
 | Fire | `Space`, left mouse button, or `Left Ctrl` |
 | Use / open door | `Space` |
-| Select / cycle weapon | `1` `2` `3` `4` `5`, `Z`, or mouse wheel |
+| Reload | `R` — an empty magazine reloads by itself |
+| Select / cycle weapon | `1`–`6`, `Z`, or mouse wheel |
+| Knife (melee) | always in the arsenal; `6`, or cycle to it with `Z` |
 | Pause menu (toggle) | `Esc` |
+| Settings menu | `SETTINGS` on the title screen or the pause menu |
 | Fullscreen | `F11` |
-| Render scale | `F2` (lower) / `F3` (higher) |
+| Quality | `F2` (lower) / `F3` (higher), or the settings menu |
 
 The window opens windowed, sized to fit whatever display the machine reports.
+The settings menu (quality, window resolution, fullscreen/windowed and an FPS
+cap) is reachable from the title screen and the pause menu; changes apply live.
 
 Menus are navigated with `W`/`S` or the arrow keys and confirmed with `Enter`,
 `Space` or a mouse click.
@@ -273,6 +280,11 @@ kills plus a wave-clear bonus, and the best score is written to
 | Chaingun | bullets | 8–14 | Full auto, small spread |
 | Rocket launcher | rockets | 70–100 splash, 2.7 radius | Hurts you too — mind the walls |
 | Plasma rifle | cells | 14–22 projectile | Fast projectiles, no splash |
+| Knife | melee | 18–30 | Always in the arsenal, 1.8 unit reach |
+
+Each gun feeds from a magazine (12 pistol, 6 shotgun, 30 chaingun, 1 rocket,
+20 cells) and reloads from the reserve pool with `R`; firing an empty magazine
+starts the reload for you. The knife never runs out.
 
 Ammo caps: 200 bullets, 60 shells, 40 rockets, 200 cells. Health caps at 100,
 armour at 100 and absorbs a third of every hit. Health and ammo pickups are
@@ -394,7 +406,7 @@ cmake --build build --target level_check -j && ./build/level_check
 
 `./fps_shooter --help` lists all options, including `--level N` and `--arena`
 to skip the menu, `--render WxH` and `--size WxH` for resolution, and `--fov`,
-`--sens` and `--mute`.
+`--sens`, `--fps` and `--mute`.
 
 ---
 
@@ -429,6 +441,9 @@ to skip the menu, `--render WxH` and `--size WxH` for resolution, and `--fov`,
   gradients can band slightly; a photograph used as a wall texture is the worst
   case. Increase the palette size in `Texture::finalize` if you would rather
   spend the RAM.
+* Settings chosen in the settings menu (quality, window resolution, fullscreen,
+  FPS cap) apply immediately but are not written to disk yet, so they reset on
+  the next launch.
 * The synthesised sound effects are held in RAM as 16-bit samples (~0.4 MiB).
   They could be generated on the fly in the audio callback instead — pure CPU,
   no clip table — which is the obvious next RAM saving if you want one.

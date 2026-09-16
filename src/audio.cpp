@@ -97,6 +97,8 @@ std::vector<std::vector<Component>> buildLibrary() {
       {{false, 500.0f, 1000.0f, 0.32f, 7.0f}, {false, 760.0f, 1520.0f, 0.22f, 8.0f}});
   set(Sfx::NoWay, {{false, 200.0f, 150.0f, 0.28f, 15.0f}, {false, 100.0f, 75.0f, 0.20f, 15.0f}});
   set(Sfx::SwitchWeapon, {{true, 2200.0f, 900.0f, 0.22f, 32.0f}});
+  // Knife: a short filtered-noise swish as the blade sweeps through the air.
+  set(Sfx::Knife, {{true, 1600.0f, 300.0f, 0.30f, 16.0f}, {false, 420.0f, 180.0f, 0.16f, 12.0f}});
   return lib;
 }
 
@@ -110,6 +112,7 @@ float durationFor(Sfx id) {
     case Sfx::EnemyDeath: return 0.75f;
     case Sfx::Shotgun: return 0.45f;
     case Sfx::EnemyAlert: return 0.5f;
+    case Sfx::Knife: return 0.24f;
     default: return 0.35f;
   }
 }
@@ -135,6 +138,7 @@ const char* Audio::sfxName(Sfx id) {
     case Sfx::PickupWeapon: return "pickup_weapon";
     case Sfx::NoWay: return "no_way";
     case Sfx::SwitchWeapon: return "switch_weapon";
+    case Sfx::Knife: return "knife";
     default: return "?";
   }
 }

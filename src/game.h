@@ -22,6 +22,9 @@ struct GameConfig {
   int windowH = 800;
   int renderW = 480;  // internal render resolution (scaled up to the window)
   int renderH = 300;
+  int quality = 2;     // index into the internal render-resolution presets
+  int resolution = 1;  // index into the window-size presets
+  int fpsLimit = 0;    // 0 = unlimited (vsync still caps to the display)
   bool fullscreen = false;
   bool headless = false;  // no window/audio: used by --selftest
   bool muteAudio = false;
@@ -40,6 +43,7 @@ enum class GameState {
   ArenaIntermission,
   Victory,
   Help,
+  Settings,
   Quit
 };
 
@@ -89,7 +93,6 @@ class Game {
   GameState state_ = GameState::Title;
   GameState menuReturnState_ = GameState::Title;
   int menuIndex_ = 0;
-  int renderPreset_ = 2;
   bool announcedClear_ = false;
   float menuTimer_ = 0.0f;
   float stateTimer_ = 0.0f;
@@ -121,7 +124,15 @@ class Game {
   void updateTitle(float dt, const InputState& input);
   void updatePlaying(float dt, const InputState& input);
   void updateMenus(float dt, const InputState& input);
+  void updateSettings(float dt, const InputState& input);
   void advanceCampaign();
+
+  // --- display settings --------------------------------------------------
+  void applyQuality(int index);
+  void applyResolution(int index);
+  void applyFullscreen(bool fullscreen);
+  void applyFpsLimit(int index);
+  void applyWindowSize(int w, int h);
   void onPlayerDeath();
   void drawOverlays();
   void drawTitleCamera(Framebuffer& fb);

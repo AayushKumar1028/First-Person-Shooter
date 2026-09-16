@@ -94,7 +94,7 @@ barrel pointing "up" into the screen.
 `viewmodel_pistol`, `viewmodel_pistol_fire`, `viewmodel_shotgun`,
 `viewmodel_shotgun_fire`, `viewmodel_chaingun`, `viewmodel_chaingun_fire`,
 `viewmodel_launcher`, `viewmodel_launcher_fire`, `viewmodel_plasma`,
-`viewmodel_plasma_fire`
+`viewmodel_plasma_fire`, `viewmodel_knife`, `viewmodel_knife_fire`
 
 The `_fire` variant is shown for a few frames when the weapon goes off, so give
 it a muzzle flash.

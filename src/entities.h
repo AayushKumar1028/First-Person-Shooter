@@ -14,8 +14,8 @@ namespace fps {
 // ---------------------------------------------------------------------------
 // Weapons
 // ---------------------------------------------------------------------------
-enum class WeaponId : int { Pistol, Shotgun, Chaingun, Launcher, Plasma, Count };
-enum class AmmoType : int { Bullets, Shells, Rockets, Cells, Count };
+enum class WeaponId : int { Pistol, Shotgun, Chaingun, Launcher, Plasma, Knife, Count };
+enum class AmmoType : int { Bullets, Shells, Rockets, Cells, None, Count };
 
 struct WeaponDef {
   const char* name;
@@ -36,6 +36,8 @@ struct WeaponDef {
   SpriteId viewFire;
   SpriteId pickupSprite;
   Sfx sound;
+  int magazine = 0;         // rounds held before reloading (0 = melee)
+  float reloadTime = 1.0f;  // seconds to refill the magazine from reserve
 };
 
 const WeaponDef& weaponDef(WeaponId id);
@@ -172,10 +174,13 @@ struct Player {
   float bobAmount = 0.0f;
   int health = 100;
   int armor = 0;
-  int ammo[4] = {50, 0, 0, 0};
-  bool hasWeapon[int(WeaponId::Count)] = {true, false, false, false, false};
+  int ammo[int(AmmoType::Count)] = {50, 0, 0, 0, 0};    // reserve ammo
+  int mag[int(WeaponId::Count)] = {0, 0, 0, 0, 0, 0};   // rounds in each magazine
+  bool hasWeapon[int(WeaponId::Count)] = {true, false, false, false, false, true};
   int weapon = int(WeaponId::Pistol);
   float fireCooldown = 0.0f;
+  float reloadTimer = 0.0f;  // counts down while reloading
+  int reloadWeapon = -1;     // weapon being reloaded (survives quick switches)
   float switchTimer = 0.0f;
   bool hasRedKey = false;
   float muzzleFlash = 0.0f;
@@ -200,6 +205,7 @@ struct InputState {
   bool run = false;
   bool fire = false;
   bool use = false;
+  bool reload = false;
   bool turnLeft = false;
   bool turnRight = false;
   float turn = 0.0f;   // yaw delta in radians for this tick
@@ -208,6 +214,8 @@ struct InputState {
   // One-shot menu navigation, consumed by the game state machine.
   bool menuUp = false;
   bool menuDown = false;
+  bool menuLeft = false;
+  bool menuRight = false;
   bool menuConfirm = false;
   bool menuBack = false;
 };
@@ -291,6 +299,8 @@ class World {
 
   void moveWithCollision(Vec2& pos, const Vec2& delta, float radius) const;
   void tryFire();
+  void beginReload();
+  void finishReload();
   void fireHitscan(const WeaponDef& weapon);
   void fireProjectile(const WeaponDef& weapon);
   void playerUse();

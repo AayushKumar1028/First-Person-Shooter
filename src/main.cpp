@@ -33,6 +33,7 @@ void printUsage(const char* exe) {
       "  --level N         jump straight into campaign level N (1-based)\n"
       "  --arena           jump straight into endless arena mode\n"
       "  --sens VALUE      mouse sensitivity (default 0.0024)\n"
+      "  --fps N           cap the frame rate (default 0 = unlimited)\n"
       "  --mute            no audio device\n"
       "\n"
       "assets\n"
@@ -251,6 +252,53 @@ int runMechanicsTest() {
   failures += check(world.player().hasWeapon[int(WeaponId::Shotgun)], "shotgun pickup grants it");
   failures += check(world.player().weapon == int(WeaponId::Shotgun), "picking up a weapon equips it");
 
+  // --- magazines and reloading -----------------------------------------
+  {
+    Player& pl = world.player();
+    pl.pos = Vec2(1.5f, 1.5f);  // clear ground, so no pickup interferes
+    pl.weapon = int(WeaponId::Pistol);
+    pl.switchTimer = 0.0f;
+    pl.fireCooldown = 0.0f;
+    pl.reloadTimer = 0.0f;
+    pl.reloadWeapon = -1;
+    pl.mag[int(WeaponId::Pistol)] = 1;
+    pl.ammo[int(AmmoType::Bullets)] = 40;
+
+    InputState fire;
+    fire.fire = true;
+    world.update(1.0f / 60.0f, fire);
+    failures += check(pl.mag[int(WeaponId::Pistol)] == 0, "firing spends a round from the magazine");
+
+    // Pulling the trigger on an empty magazine begins a reload on its own.
+    pl.fireCooldown = 0.0f;
+    world.update(1.0f / 60.0f, fire);
+    failures += check(pl.reloadTimer > 0.0f, "an empty magazine reloads automatically");
+
+    const int reserveBefore = pl.ammo[int(AmmoType::Bullets)];
+    for (int i = 0; i < 240; ++i) world.update(1.0f / 60.0f, InputState());
+    const int magazine = weaponDef(WeaponId::Pistol).magazine;
+    failures += check(pl.mag[int(WeaponId::Pistol)] == magazine, "reload refills the magazine");
+    failures += check(pl.ammo[int(AmmoType::Bullets)] == reserveBefore - magazine,
+                      "reload draws the rounds from the reserve pool");
+  }
+
+  // --- the knife is melee: owned from the start, never spends ammo ------
+  {
+    Player& pl = world.player();
+    failures += check(pl.hasWeapon[int(WeaponId::Knife)], "the knife is owned from the start");
+    failures += check(weaponDef(WeaponId::Knife).ammo == AmmoType::None, "the knife is a melee weapon");
+    pl.weapon = int(WeaponId::Knife);
+    pl.switchTimer = 0.0f;
+    pl.fireCooldown = 0.0f;
+    const int bullets = pl.ammo[int(AmmoType::Bullets)];
+    InputState swing;
+    swing.fire = true;
+    world.update(1.0f / 60.0f, swing);
+    failures += check(pl.ammo[int(AmmoType::Bullets)] == bullets, "a knife swing spends no ammo");
+    failures += check(pl.mag[int(WeaponId::Knife)] == 0, "the knife has no magazine");
+    pl.weapon = int(WeaponId::Shotgun);
+  }
+
   // --- doors slide, block, then close again -----------------------------
   failures += check(level.doorIndexAt(3, 6) >= 0, "door tile is registered");
   failures += check(level.isSolid(3, 6), "closed door blocks movement");
@@ -304,6 +352,38 @@ int runSelfTest(const GameConfig& base, int frames, int levelIndex, bool arena, 
   std::printf("\n=== SELFTEST: title screen ===\n");
   game.renderFrame();
   printAsciiFrame(game.framebuffer(), 116, "title screen (menu over live 3D scene)");
+
+  // --- settings menu: open it, change a value, back out ---------------------
+  std::printf("\n=== SELFTEST: settings menu ===\n");
+  bool settingsOk = false;
+  {
+    const int beforeW = game.framebuffer().w;
+    InputState nav;
+    nav.menuDown = true;  // walk down to the SETTINGS entry
+    for (int i = 0; i < 3; ++i) game.tick(1.0f / 60.0f, nav);
+    nav.menuDown = false;
+    nav.menuConfirm = true;  // open it
+    game.tick(1.0f / 60.0f, nav);
+    nav.menuConfirm = false;
+    const bool opened = game.state() == GameState::Settings;
+
+    nav.menuRight = true;  // bump quality up one notch
+    game.tick(1.0f / 60.0f, nav);
+    nav.menuRight = false;
+    const bool changed = game.framebuffer().w != beforeW;
+    game.renderFrame();
+    printAsciiFrame(game.framebuffer(), 116, "settings menu");
+
+    nav.menuBack = true;  // Esc returns to the title
+    game.tick(1.0f / 60.0f, nav);
+    const bool returned = game.state() == GameState::Title;
+
+    std::printf("  [%s] settings menu opens\n", opened ? "ok" : "FAIL");
+    std::printf("  [%s] changing quality resizes the render target\n", changed ? "ok" : "FAIL");
+    std::printf("  [%s] Esc returns to the title\n", returned ? "ok" : "FAIL");
+    settingsOk = opened && changed && returned;
+    game.setRenderResolution(cfg.renderW, cfg.renderH);  // restore for the rest of the run
+  }
 
   if (arena) {
     game.startArena();
@@ -404,7 +484,8 @@ int runSelfTest(const GameConfig& base, int frames, int levelIndex, bool arena, 
   std::printf("  player inside : %s\n",
               game.level().inside(int(p.pos.x), int(p.pos.y)) ? "yes" : "NO");
 
-  bool sane = game.level().inside(int(p.pos.x), int(p.pos.y));
+  bool sane = settingsOk;
+  sane = sane && game.level().inside(int(p.pos.x), int(p.pos.y));
   sane = sane && p.health >= 0 && p.health <= 100;
   sane = sane && p.armor >= 0;
   sane = sane && killsAfter > killsBefore;  // combat must actually damage hostiles
@@ -480,6 +561,10 @@ int main(int argc, char** argv) {
       const char* value = next("--sens");
       if (!value) return 1;
       config.mouseSensitivity = float(std::atof(value));
+    } else if (arg == "--fps") {
+      const char* value = next("--fps");
+      if (!value) return 1;
+      config.fpsLimit = std::max(0, std::atoi(value));
     } else if (arg == "--level") {
       const char* value = next("--level");
       if (!value) return 1;
