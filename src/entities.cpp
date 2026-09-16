@@ -442,9 +442,9 @@ void World::fireHitscan(const WeaponDef& weapon) {
       damageProp(propIndex, rng_.irange(weapon.damageMin, weapon.damageMax), true);
       addParticles(props_[size_t(propIndex)].pos, 0.4f, 2, rgba(200, 200, 200), 0.5f, 0.3f);
     } else if (hit.hit) {
-      // Spark on the wall, matching the vertical aim so it looks like a hit.
+      // Spark on the wall at eye height (aiming is level).
       const Vec2 impact = origin + dir * std::max(0.05f, hit.dist - 0.06f);
-      const float z = clampf(player_.height + std::tan(player_.pitch) * hit.dist, 0.05f, 0.95f);
+      const float z = clampf(player_.height, 0.05f, 0.95f);
       addParticles(impact, z, 3, rgba(220, 220, 210), 0.5f, 0.25f);
     }
   }
@@ -637,17 +637,15 @@ void World::updatePlayer(float dt, const InputState& input) {
     p.vel = Vec2(0.0f, 0.0f);
     // Slump to the floor.
     p.height = lerpf(p.height, 0.18f, 1.0f - std::exp(-dt * 4.0f));
-    p.pitch = lerpf(p.pitch, -0.45f, 1.0f - std::exp(-dt * 3.0f));
     p.damageFlash = std::max(0.0f, p.damageFlash - dt * 0.4f);
     p.shake *= std::exp(-dt * 4.0f);
     return;
   }
 
-  // Mouse look arrives as a delta; arrow keys turn at a fixed rate.
+  // Mouse look arrives as a delta; A/D and the left/right arrows turn at a
+  // fixed rate. Aiming stays level - there is no vertical look.
   const float keyTurn = (input.turnRight ? 1.0f : 0.0f) - (input.turnLeft ? 1.0f : 0.0f);
-  const float keyLook = (input.lookUp ? 1.0f : 0.0f) - (input.lookDown ? 1.0f : 0.0f);
   p.angle += input.turn + keyTurn * 2.6f * dt;
-  p.pitch = clampf(p.pitch + input.look + keyLook * 1.7f * dt, -0.62f, 0.62f);
 
   const Vec2 forward = fromAngle(p.angle);
   const Vec2 right(-forward.y, forward.x);

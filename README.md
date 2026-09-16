@@ -44,7 +44,8 @@ ARGB framebuffer that is scaled up to the window.
 
 * Textured walls via DDA raycasting, with per-column depth buffer
 * Perspective-correct textured floors *and* ceilings (rows cast back into the grid)
-* Vertical look (y-shearing pitch), square pixels derived from the FOV
+* Level aiming, with square pixels derived from the FOV (the renderer keeps
+  y-shearing for the title camera, but the player always aims level)
 * Billboard sprites, alpha blended, depth-clipped, sorted back to front
 * Sliding doors rendered as real geometry that recedes into the ceiling
 * Distance fog, per-axis wall darkening, muzzle sparks, blood, explosion puffs
@@ -212,15 +213,19 @@ decoded, then `Texture::finalize()` quantises them and **releases** the buffer.
 
 | Action | Keys |
 | --- | --- |
-| Move | `W` `S`, strafe `A` `D` |
-| Look | mouse, or `←` `→` to turn and `↑` `↓` to aim |
+| Move forward / back | `W`/`S` or `↑`/`↓` |
+| Turn left / right | `A`/`D` or `←`/`→` |
+| Strafe | `Q` / `E` |
+| Look | mouse, horizontal only — aiming is always level |
 | Run | `Left Shift` |
-| Fire | left mouse button, or `Left Ctrl` |
-| Use / open door | `Space` or `E` |
-| Select weapon | `1` `2` `3` `4` `5`, or mouse wheel |
-| Pause | `Esc` |
+| Fire | `Space`, left mouse button, or `Left Ctrl` |
+| Use / open door | `Space` |
+| Select / cycle weapon | `1` `2` `3` `4` `5`, `Z`, or mouse wheel |
+| Pause menu (toggle) | `Esc` |
 | Fullscreen | `F11` |
 | Render scale | `F2` (lower) / `F3` (higher) |
+
+The window opens windowed, sized to fit whatever display the machine reports.
 
 Menus are navigated with `W`/`S` or the arrow keys and confirmed with `Enter`,
 `Space` or a mouse click.

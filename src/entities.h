@@ -167,7 +167,6 @@ struct Player {
   Vec2 pos;
   Vec2 vel;
   float angle = 0.0f;
-  float pitch = 0.0f;
   float height = 0.5f;  // eye height including head bob
   float bobPhase = 0.0f;
   float bobAmount = 0.0f;
@@ -203,10 +202,7 @@ struct InputState {
   bool use = false;
   bool turnLeft = false;
   bool turnRight = false;
-  bool lookUp = false;
-  bool lookDown = false;
   float turn = 0.0f;   // yaw delta in radians for this tick
-  float look = 0.0f;   // pitch delta in radians for this tick
   int selectWeapon = -1;
   int cycleWeapon = 0;
   // One-shot menu navigation, consumed by the game state machine.

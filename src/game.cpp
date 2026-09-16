@@ -99,10 +99,27 @@ bool Game::init(const GameConfig& config) {
 }
 
 void Game::createWindow() {
-  Uint32 flags = SDL_WINDOW_SHOWN;
+  // Fit the requested window to whatever display this machine actually has, so
+  // it never opens larger than the screen. Starts windowed; F11 toggles.
+  int winW = config_.windowW;
+  int winH = config_.windowH;
+  SDL_Rect usable{0, 0, 0, 0};
+  if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.w > 0 && usable.h > 0) {
+    const float maxW = float(usable.w) * 0.92f;
+    const float maxH = float(usable.h) * 0.92f;
+    const float scale = std::min(1.0f, std::min(maxW / float(winW), maxH / float(winH)));
+    if (scale < 1.0f) {
+      winW = std::max(320, int(float(winW) * scale));
+      winH = std::max(200, int(float(winH) * scale));
+    }
+  }
+  config_.windowW = winW;
+  config_.windowH = winH;
+
+  Uint32 flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
   if (config_.fullscreen) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
   window_ = SDL_CreateWindow("FPS SHOOTER - DOOMLIKE", SDL_WINDOWPOS_CENTERED,
-                             SDL_WINDOWPOS_CENTERED, config_.windowW, config_.windowH, flags);
+                             SDL_WINDOWPOS_CENTERED, winW, winH, flags);
   if (!window_) {
     std::printf("[game] window creation failed: %s\n", SDL_GetError());
     return;
@@ -294,7 +311,6 @@ void Game::run() {
       InputState input = pendingInput_;
       // Mouse deltas and menu edges apply to a single tick only.
       pendingInput_.turn = 0.0f;
-      pendingInput_.look = 0.0f;
       pendingInput_.menuUp = pendingInput_.menuDown = false;
       pendingInput_.menuConfirm = pendingInput_.menuBack = false;
       pendingInput_.cycleWeapon = 0;
@@ -414,8 +430,8 @@ void Game::advanceCampaign() {
 void Game::updateTitle(float dt, const InputState& input) {
   (void)dt;
   const int count = 4;
-  if (input.menuUp || input.forward) menuIndex_ = (menuIndex_ + count - 1) % count;
-  if (input.menuDown || input.back) menuIndex_ = (menuIndex_ + 1) % count;
+  if (input.menuUp) menuIndex_ = (menuIndex_ + count - 1) % count;
+  if (input.menuDown) menuIndex_ = (menuIndex_ + 1) % count;
 
   if (!input.menuConfirm) return;
   switch (menuIndex_) {
@@ -441,8 +457,8 @@ void Game::updateTitle(float dt, const InputState& input) {
 
 void Game::updateMenus(float dt, const InputState& input) {
   (void)dt;
-  const bool up = input.menuUp || input.forward;
-  const bool down = input.menuDown || input.back;
+  const bool up = input.menuUp;
+  const bool down = input.menuDown;
   const bool confirm = input.menuConfirm;
 
   switch (state_) {
@@ -556,10 +572,13 @@ void Game::handleEvents() {
         keys_[ev.key.keysym.scancode] = true;
         if (ev.key.repeat) break;
         const SDL_Keycode sym = ev.key.keysym.sym;
+        const SDL_Scancode code = ev.key.keysym.scancode;
         if (sym == SDLK_ESCAPE) in.menuBack = true;
-        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) in.menuConfirm = true;
-        else if (sym == SDLK_UP) in.menuUp = true;
-        else if (sym == SDLK_DOWN) in.menuDown = true;
+        else if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_SPACE) in.menuConfirm = true;
+        // Arrows and W/S both step through menus (edge triggered, no repeats).
+        else if (sym == SDLK_UP || code == SDL_SCANCODE_W) in.menuUp = true;
+        else if (sym == SDLK_DOWN || code == SDL_SCANCODE_S) in.menuDown = true;
+        else if (code == SDL_SCANCODE_Z) in.cycleWeapon += 1;
         else if (sym >= SDLK_1 && sym <= SDLK_5) in.selectWeapon = int(sym - SDLK_1);
         else if (sym == SDLK_F11 && window_) {
           const Uint32 flags = SDL_GetWindowFlags(window_);
@@ -582,10 +601,9 @@ void Game::handleEvents() {
         break;
 
       case SDL_MOUSEMOTION:
+        // Horizontal look only: aiming is level, so the mouse Y axis is ignored.
         if (SDL_GetRelativeMouseMode()) {
           in.turn += float(ev.motion.xrel) * config_.mouseSensitivity;
-          const float dy = float(ev.motion.yrel) * config_.mouseSensitivity;
-          in.look += config_.invertY ? dy : -dy;
         }
         break;
 
@@ -609,18 +627,19 @@ void Game::handleEvents() {
     }
   }
 
-  // Held keys drive continuous actions.
-  in.forward |= keys_[SDL_SCANCODE_W];
-  in.back |= keys_[SDL_SCANCODE_S];
-  in.strafeLeft |= keys_[SDL_SCANCODE_A];
-  in.strafeRight |= keys_[SDL_SCANCODE_D];
-  in.run |= keys_[SDL_SCANCODE_LSHIFT] || keys_[SDL_SCANCODE_RSHIFT];
-  in.use |= keys_[SDL_SCANCODE_SPACE] || keys_[SDL_SCANCODE_E];
-  in.turnLeft |= keys_[SDL_SCANCODE_LEFT];
-  in.turnRight |= keys_[SDL_SCANCODE_RIGHT];
-  in.lookUp |= keys_[SDL_SCANCODE_UP];
-  in.lookDown |= keys_[SDL_SCANCODE_DOWN];
-  in.fire |= mouseFire_ || keys_[SDL_SCANCODE_LCTRL] || keys_[SDL_SCANCODE_RCTRL];
+  // Held keys drive continuous actions. Assign rather than OR, so releasing a
+  // key actually clears the flag (ORing latched strafe/fire/turn on forever).
+  in.forward = keys_[SDL_SCANCODE_W] || keys_[SDL_SCANCODE_UP];
+  in.back = keys_[SDL_SCANCODE_S] || keys_[SDL_SCANCODE_DOWN];
+  in.turnLeft = keys_[SDL_SCANCODE_A] || keys_[SDL_SCANCODE_LEFT];
+  in.turnRight = keys_[SDL_SCANCODE_D] || keys_[SDL_SCANCODE_RIGHT];
+  in.strafeLeft = keys_[SDL_SCANCODE_Q];
+  in.strafeRight = keys_[SDL_SCANCODE_E];
+  in.run = keys_[SDL_SCANCODE_LSHIFT] || keys_[SDL_SCANCODE_RSHIFT];
+  // Space shoots and interacts; the mouse and Ctrl also fire.
+  in.use = keys_[SDL_SCANCODE_SPACE];
+  in.fire = mouseFire_ || keys_[SDL_SCANCODE_SPACE] || keys_[SDL_SCANCODE_LCTRL] ||
+            keys_[SDL_SCANCODE_RCTRL];
 }
 
 // ---------------------------------------------------------------------------
@@ -649,8 +668,8 @@ void Game::renderFrame() {
       drawTitleCamera(fb);
       const std::vector<std::string> items = {"NEW GAME", "ARENA MODE", "HOW TO PLAY", "QUIT"};
       drawMenu(fb, "FPS SHOOTER", "A DOOM-STYLE RAYCASTER IN C++", items, menuIndex_,
-               {"WASD MOVE - MOUSE LOOK - LMB FIRE - SPACE USE",
-                "1-5 WEAPONS - ESC PAUSE - F11 FULLSCREEN",
+               {"ARROWS / WASD MOVE + TURN - MOUSE LOOK",
+                "SPACE FIRE + USE - Z WEAPONS - ESC MENU - F11 FULLSCREEN",
                 bestScore_ > 0 ? ("ARENA BEST " + std::to_string(bestScore_)) : ""});
       break;
     }
@@ -671,7 +690,6 @@ void Game::renderFrame() {
       const Player& p = world_.player();
       cam.pos = p.pos;
       cam.angle = p.angle;
-      cam.pitch = p.pitch;
       cam.height = p.height;
       cam.fov = config_.fov;
       if (p.shake > 0.001f) {
@@ -781,13 +799,14 @@ void Game::drawOverlays() {
 
     case GameState::Help: {
       const std::vector<std::string> lines = {
-          "MOVEMENT      W S FORWARD / BACK      A D STRAFE",
-          "LOOK          MOUSE                 ARROWS TURN / AIM",
+          "MOVE          W S OR UP DOWN - FORWARD / BACK",
+          "TURN          A D OR LEFT RIGHT",
+          "STRAFE        Q / E",
+          "LOOK          MOUSE (HORIZONTAL ONLY)",
           "RUN           LEFT SHIFT",
-          "FIRE          MOUSE 1 OR LEFT CTRL",
-          "USE / OPEN    SPACE OR E",
-          "WEAPONS       1 2 3 4 5  OR MOUSE WHEEL",
-          "PAUSE         ESC",
+          "SHOOT / USE   SPACE  (MOUSE 1 OR CTRL ALSO FIRE)",
+          "WEAPONS       Z CYCLES   1 2 3 4 5   OR MOUSE WHEEL",
+          "PAUSE / MENU  ESC TOGGLES",
           "DISPLAY       F11 FULLSCREEN      F2 / F3 RENDER SCALE",
           "",
           "GOAL          CLEAR EVERY HOSTILE, THEN REACH THE EXIT",

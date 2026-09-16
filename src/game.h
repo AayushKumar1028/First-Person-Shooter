@@ -26,7 +26,6 @@ struct GameConfig {
   bool headless = false;  // no window/audio: used by --selftest
   bool muteAudio = false;
   float mouseSensitivity = 0.0024f;
-  bool invertY = false;
   float fov = 74.0f;
   bool verbose = true;
 };

@@ -33,7 +33,6 @@ void printUsage(const char* exe) {
       "  --level N         jump straight into campaign level N (1-based)\n"
       "  --arena           jump straight into endless arena mode\n"
       "  --sens VALUE      mouse sensitivity (default 0.0024)\n"
-      "  --invert-y        invert vertical mouse look\n"
       "  --mute            no audio device\n"
       "\n"
       "assets\n"
@@ -397,8 +396,7 @@ int runSelfTest(const GameConfig& base, int frames, int levelIndex, bool arena, 
   const Player& p = game.world().player();
   std::printf("\n=== SELFTEST RESULT ===\n");
   std::printf("  final state   : %d (7 = Victory, 4 = Playing, 5 = Dead)\n", int(game.state()));
-  std::printf("  player pos    : (%.2f, %.2f) angle=%.2f pitch=%+.2f\n", p.pos.x, p.pos.y, p.angle,
-              p.pitch);
+  std::printf("  player pos    : (%.2f, %.2f) angle=%.2f\n", p.pos.x, p.pos.y, p.angle);
   std::printf("  health/armor  : %d / %d\n", p.health, p.armor);
   std::printf("  kills / alive : %d / %d of %d spawned\n", p.kills, game.world().aliveEnemies(),
               game.world().enemyTotal());
@@ -458,8 +456,6 @@ int main(int argc, char** argv) {
       config.muteAudio = true;
     } else if (arg == "--quiet") {
       config.verbose = false;
-    } else if (arg == "--invert-y") {
-      config.invertY = true;
     } else if (arg == "--arena") {
       startArena = true;
     } else if (arg == "--selftest") {
